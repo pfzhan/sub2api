@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,8 +33,11 @@ const (
 	CredStartURL              = "start_url"
 )
 
-// ProviderBuilderID 是 Builder ID 登录在 provider 字段里的取值，与 Kiro IDE 一致。
-const ProviderBuilderID = "BuilderId"
+// provider 字段里 AWS 登录的取值，与 Kiro IDE 一致。
+const (
+	ProviderBuilderID  = "BuilderId"
+	ProviderEnterprise = "Enterprise"
+)
 
 // Credentials 是一个 Kiro 账号的认证信息。
 type Credentials struct {
@@ -169,10 +173,24 @@ func isBuilderIDMethod(method string) bool {
 	return false
 }
 
+// regionPattern 匹配 AWS 区域名，例如 us-east-1、eu-central-1、us-gov-west-1。
+var regionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
+
+// ValidRegion 报告 region 是否为合法的 AWS 区域名。区域会拼进上游主机名，
+// 使用前必须校验。
+func ValidRegion(region string) bool {
+	return regionPattern.MatchString(region)
+}
+
 // Validate 检查凭据是否足以刷新 token。
 func (c Credentials) Validate() error {
 	if strings.TrimSpace(c.RefreshToken) == "" {
 		return errors.New("refresh token is required")
+	}
+	for _, region := range []string{c.Region, c.SSORegion} {
+		if region != "" && !ValidRegion(region) {
+			return fmt.Errorf("invalid region %q", region)
+		}
 	}
 	if c.AuthMethod == AuthMethodIdC && (c.ClientID == "" || c.ClientSecret == "") {
 		return errors.New("client id and client secret are required for idc credentials")

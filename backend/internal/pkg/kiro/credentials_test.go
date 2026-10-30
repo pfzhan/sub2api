@@ -122,3 +122,16 @@ func TestNormalizeAuthMethod(t *testing.T) {
 	require.Equal(t, AuthMethodIdC, NormalizeAuthMethod("", true))
 	require.Equal(t, AuthMethodSocial, NormalizeAuthMethod("", false))
 }
+
+func TestValidateRejectsInvalidRegion(t *testing.T) {
+	t.Parallel()
+	require.True(t, ValidRegion("us-east-1"))
+	require.True(t, ValidRegion("us-gov-west-1"))
+	require.False(t, ValidRegion("evil.com/x?"))
+	require.False(t, ValidRegion("US-EAST-1"))
+
+	_, err := ParseImport(`{"refreshToken":"rt","authMethod":"social","region":"evil.com/x?"}`)
+	require.ErrorContains(t, err, "invalid region")
+	_, err = ParseImport(`{"refreshToken":"rt","clientId":"c","clientSecret":"s","idcRegion":"a.b"}`)
+	require.ErrorContains(t, err, "invalid region")
+}

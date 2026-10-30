@@ -1482,20 +1482,33 @@ export default {
         kiro: {
           title: 'Kiro Account Authorization',
           methodImport: 'Import credentials',
-          methodBuilderId: 'AWS Builder ID login',
+          methodBuilderId: 'AWS Builder ID',
+          methodIdentityCenter: 'IAM Identity Center',
+          methodGoogle: 'Google',
+          methodGithub: 'GitHub',
           region: 'Region',
-          regionHint: 'Used when the credentials do not specify a region. Defaults to us-east-1',
+          regionHint: 'Region of the Kiro API. Defaults to us-east-1. Imported credentials that specify a region keep their own.',
+          startUrl: 'Start URL',
+          startUrlHint: 'Your organization\'s AWS access portal, e.g. https://my-org.awsapps.com/start',
+          ssoRegion: 'SSO region',
+          ssoRegionHint: 'Region of your IAM Identity Center instance. Defaults to the region above.',
           importDesc: 'Paste a Kiro refresh token or the full content of kiro-auth-token.json. IdC credentials must include clientId and clientSecret.',
           importPlaceholder: 'Paste a refresh token or JSON credentials...',
           validating: 'Validating...',
           validateAndCreate: 'Validate & Create',
           importFailed: 'Failed to import Kiro credentials',
           builderIdDesc: 'Start login opens the AWS authorization page. Check that the code shown there matches the one below and approve; the account is created automatically.',
+          identityCenterDesc: 'Sign in with your organization\'s IAM Identity Center. Start login opens your organization\'s authorization page. Check that the code shown there matches the one below and approve; the account is created automatically.',
+          socialDesc: 'Start login opens the Kiro sign-in page. After you sign in, the browser is redirected to an address starting with kiro://. Paste that full address below.',
           startLogin: 'Start login',
           userCode: 'User code',
           openLink: 'Authorization page',
+          loginPage: 'Sign-in page',
+          callbackUrl: 'Callback URL',
+          callbackUrlHint: 'If the address bar does not change, open the Network panel of the browser developer tools, find the last redirect and copy its kiro:// address.',
+          completeLogin: 'Complete login',
           waiting: 'Waiting for authorization...',
-          loginFailed: 'Builder ID login failed'
+          loginFailed: 'Kiro login failed'
         }
                 },      // Gemini specific (platform-wide)
       gemini: {

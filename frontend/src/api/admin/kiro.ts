@@ -1,6 +1,7 @@
 /**
  * Admin Kiro API endpoints
- * Handles Kiro credential import and AWS Builder ID device login for administrators
+ * Handles Kiro credential import and login (AWS Builder ID, IAM Identity Center,
+ * Google / GitHub) for administrators
  */
 
 import { apiClient } from '../client'
@@ -43,6 +44,10 @@ export interface KiroCredentialsResponse {
 
 export interface KiroDeviceAuthRequest {
   region?: string
+  // IAM Identity Center 所在区域，不填时与 region 相同
+  sso_region?: string
+  // 组织的 start URL，不填时为 Builder ID
+  start_url?: string
   proxy_id?: number | null
 }
 
@@ -59,6 +64,20 @@ export interface KiroDevicePollResponse {
   status: 'pending' | 'success'
   interval?: number
   credentials?: Record<string, unknown>
+}
+
+export type KiroSocialProvider = 'google' | 'github'
+
+export interface KiroSocialAuthRequest {
+  provider: KiroSocialProvider
+  proxy_id?: number | null
+}
+
+export interface KiroSocialAuthResponse {
+  session_id: string
+  auth_url: string
+  redirect_uri: string
+  expires_in: number
 }
 
 export async function importCredentials(payload: KiroImportRequest): Promise<KiroCredentialsResponse> {
@@ -78,4 +97,23 @@ export async function pollDeviceAuth(sessionId: string): Promise<KiroDevicePollR
   return data
 }
 
-export default { importCredentials, startDeviceAuth, pollDeviceAuth }
+export async function startSocialAuth(payload: KiroSocialAuthRequest): Promise<KiroSocialAuthResponse> {
+  const { data } = await apiClient.post<KiroSocialAuthResponse>('/admin/kiro/oauth/social-auth', payload)
+  return data
+}
+
+export async function exchangeSocialAuth(sessionId: string, callbackUrl: string): Promise<KiroCredentialsResponse> {
+  const { data } = await apiClient.post<KiroCredentialsResponse>('/admin/kiro/oauth/social-exchange', {
+    session_id: sessionId,
+    callback_url: callbackUrl
+  })
+  return data
+}
+
+export default {
+  importCredentials,
+  startDeviceAuth,
+  pollDeviceAuth,
+  startSocialAuth,
+  exchangeSocialAuth
+}

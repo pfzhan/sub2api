@@ -6,7 +6,9 @@ import { withClearedKiroIdentity } from '@/api/admin/kiro'
 const kiroMocks = vi.hoisted(() => ({
   importCredentials: vi.fn(),
   startDeviceAuth: vi.fn(),
-  pollDeviceAuth: vi.fn()
+  pollDeviceAuth: vi.fn(),
+  startSocialAuth: vi.fn(),
+  exchangeSocialAuth: vi.fn()
 }))
 
 vi.mock('@/api/admin/kiro', async () => {
@@ -44,6 +46,8 @@ describe('KiroAuthPanel', () => {
     kiroMocks.importCredentials.mockReset()
     kiroMocks.startDeviceAuth.mockReset()
     kiroMocks.pollDeviceAuth.mockReset()
+    kiroMocks.startSocialAuth.mockReset()
+    kiroMocks.exchangeSocialAuth.mockReset()
   })
 
   afterEach(() => {
@@ -90,7 +94,12 @@ describe('KiroAuthPanel', () => {
     await wrapper.get('button.btn-primary').trigger('click')
     await flushPromises()
 
-    expect(kiroMocks.startDeviceAuth).toHaveBeenCalledWith({ region: 'us-east-1', proxy_id: 3 })
+    expect(kiroMocks.startDeviceAuth).toHaveBeenCalledWith({
+      region: 'us-east-1',
+      sso_region: undefined,
+      start_url: undefined,
+      proxy_id: 3
+    })
     expect(window.open).toHaveBeenCalledWith(deviceAuth.verification_uri_complete, '_blank', 'noopener,noreferrer')
     expect(wrapper.text()).toContain('ABCD-EFGH')
 
@@ -118,6 +127,104 @@ describe('KiroAuthPanel', () => {
     await vi.advanceTimersByTimeAsync(30000)
 
     expect(kiroMocks.pollDeviceAuth).not.toHaveBeenCalled()
+  })
+})
+
+describe('KiroAuthPanel identity center and social login', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    Object.values(kiroMocks).forEach((mock) => mock.mockReset())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('sends the start URL and SSO region for IAM Identity Center', async () => {
+    kiroMocks.startDeviceAuth.mockResolvedValue(deviceAuth)
+    const wrapper = mountPanel()
+
+    await wrapper.get('input[value="identity_center"]').setValue(true)
+    const startButton = wrapper.get('button.btn-primary')
+    expect(startButton.attributes('disabled')).toBeDefined()
+
+    await wrapper.get('input[type="url"]').setValue(' https://my-org.awsapps.com/start ')
+    const textInputs = wrapper.findAll('input[type="text"]')
+    await textInputs[1].setValue('eu-west-1')
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(kiroMocks.startDeviceAuth).toHaveBeenCalledWith({
+      region: 'us-east-1',
+      sso_region: 'eu-west-1',
+      start_url: 'https://my-org.awsapps.com/start',
+      proxy_id: 3
+    })
+    expect(wrapper.text()).toContain('ABCD-EFGH')
+  })
+
+  it('exchanges the pasted callback URL for GitHub login', async () => {
+    kiroMocks.startSocialAuth.mockResolvedValue({
+      session_id: 'social-1',
+      auth_url: 'https://prod.us-east-1.auth.desktop.kiro.dev/login?idp=Github',
+      redirect_uri: 'kiro://kiro.kiroAgent/authenticate-success',
+      expires_in: 600
+    })
+    kiroMocks.exchangeSocialAuth
+      .mockRejectedValueOnce({ reason: 'KIRO_INVALID_CALLBACK', message: 'invalid kiro callback: state mismatch' })
+      .mockResolvedValueOnce({ credentials: { access_token: 'at', auth_method: 'social' } })
+    const wrapper = mountPanel()
+
+    await wrapper.get('input[value="github"]').setValue(true)
+    expect(wrapper.find('input[placeholder="us-east-1"]').exists()).toBe(false)
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(kiroMocks.startSocialAuth).toHaveBeenCalledWith({ provider: 'github', proxy_id: 3 })
+    expect(window.open).toHaveBeenCalledWith(
+      'https://prod.us-east-1.auth.desktop.kiro.dev/login?idp=Github',
+      '_blank',
+      'noopener,noreferrer'
+    )
+
+    await wrapper.get('textarea').setValue('kiro://kiro.kiroAgent/authenticate-success?code=c&state=bad')
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('state mismatch')
+    expect(wrapper.find('textarea').exists()).toBe(true)
+
+    await wrapper.get('textarea').setValue('kiro://kiro.kiroAgent/authenticate-success?code=c&state=ok')
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+    expect(kiroMocks.exchangeSocialAuth).toHaveBeenLastCalledWith(
+      'social-1',
+      'kiro://kiro.kiroAgent/authenticate-success?code=c&state=ok'
+    )
+    expect(wrapper.emitted('authorized')).toEqual([[{ access_token: 'at', auth_method: 'social' }]])
+  })
+
+  it('restarts social login when the session is no longer usable', async () => {
+    kiroMocks.startSocialAuth.mockResolvedValue({
+      session_id: 'social-1',
+      auth_url: 'https://prod.us-east-1.auth.desktop.kiro.dev/login?idp=Google',
+      redirect_uri: 'kiro://kiro.kiroAgent/authenticate-success',
+      expires_in: 600
+    })
+    kiroMocks.exchangeSocialAuth.mockRejectedValue({ reason: 'KIRO_SOCIAL_TOKEN_FAILED', message: 'kiro social login failed' })
+    const wrapper = mountPanel()
+
+    await wrapper.get('input[value="google"]').setValue(true)
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('kiro://kiro.kiroAgent/authenticate-success?code=c&state=s')
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('kiro social login failed')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.text()).toContain('admin.accounts.oauth.kiro.startLogin')
   })
 })
 

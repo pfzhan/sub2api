@@ -6,8 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// KiroOAuthHandler 处理 Kiro 账号的凭据导入与 Builder ID 登录。两种方式都只
-// 返回 credentials，账号由前端通过通用的创建账号接口创建。
+// KiroOAuthHandler 处理 Kiro 账号的凭据导入与登录。各种方式都只返回
+// credentials，账号由前端通过通用的创建账号接口创建。
 type KiroOAuthHandler struct {
 	kiroOAuthService *service.KiroOAuthService
 }
@@ -43,11 +43,14 @@ func (h *KiroOAuthHandler) ImportCredentials(c *gin.Context) {
 }
 
 type KiroDeviceAuthRequest struct {
-	Region  string `json:"region"`
-	ProxyID *int64 `json:"proxy_id"`
+	Region    string `json:"region"`
+	SSORegion string `json:"sso_region"`
+	StartURL  string `json:"start_url"`
+	ProxyID   *int64 `json:"proxy_id"`
 }
 
-// StartDeviceAuth 发起 Builder ID 设备码登录。
+// StartDeviceAuth 发起设备码登录。不填 start_url 时为 Builder ID，填写组织的
+// start URL 时为 IAM Identity Center。
 // POST /api/v1/admin/kiro/oauth/device-auth
 func (h *KiroOAuthHandler) StartDeviceAuth(c *gin.Context) {
 	var req KiroDeviceAuthRequest
@@ -55,7 +58,12 @@ func (h *KiroOAuthHandler) StartDeviceAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	result, err := h.kiroOAuthService.StartBuilderIDLogin(c.Request.Context(), req.ProxyID, req.Region)
+	result, err := h.kiroOAuthService.StartDeviceLogin(c.Request.Context(), service.KiroDeviceLoginInput{
+		ProxyID:   req.ProxyID,
+		Region:    req.Region,
+		SSORegion: req.SSORegion,
+		StartURL:  req.StartURL,
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -67,7 +75,7 @@ type KiroDevicePollRequest struct {
 	SessionID string `json:"session_id" binding:"required"`
 }
 
-// PollDeviceAuth 查询 Builder ID 登录结果。
+// PollDeviceAuth 查询设备码登录结果。
 // POST /api/v1/admin/kiro/oauth/device-poll
 func (h *KiroOAuthHandler) PollDeviceAuth(c *gin.Context) {
 	var req KiroDevicePollRequest
@@ -75,10 +83,52 @@ func (h *KiroOAuthHandler) PollDeviceAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	result, err := h.kiroOAuthService.PollBuilderIDLogin(c.Request.Context(), req.SessionID)
+	result, err := h.kiroOAuthService.PollDeviceLogin(c.Request.Context(), req.SessionID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, result)
+}
+
+type KiroSocialAuthRequest struct {
+	Provider string `json:"provider" binding:"required"`
+	ProxyID  *int64 `json:"proxy_id"`
+}
+
+// StartSocialAuth 生成 Google / GitHub 登录地址。
+// POST /api/v1/admin/kiro/oauth/social-auth
+func (h *KiroOAuthHandler) StartSocialAuth(c *gin.Context) {
+	var req KiroSocialAuthRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	result, err := h.kiroOAuthService.StartSocialLogin(c.Request.Context(), req.ProxyID, req.Provider)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+type KiroSocialExchangeRequest struct {
+	SessionID   string `json:"session_id" binding:"required"`
+	CallbackURL string `json:"callback_url" binding:"required"`
+}
+
+// ExchangeSocialAuth 用登录后的回调地址换取 credentials。
+// POST /api/v1/admin/kiro/oauth/social-exchange
+func (h *KiroOAuthHandler) ExchangeSocialAuth(c *gin.Context) {
+	var req KiroSocialExchangeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	credentials, err := h.kiroOAuthService.ExchangeSocialLogin(c.Request.Context(), req.SessionID, req.CallbackURL)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"credentials": credentials})
 }

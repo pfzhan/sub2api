@@ -63,7 +63,7 @@ func RegisterAdminRoutes(
 		// Grok OAuth
 		registerGrokOAuthRoutes(admin, h)
 
-		// Kiro 凭据导入与 Builder ID 登录
+		// Kiro 凭据导入与登录
 		registerKiroOAuthRoutes(admin, h)
 
 		// 国产供应商（kimi/zhipu/deepseek）额度与余额
@@ -499,6 +499,8 @@ func registerKiroOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		kiro.POST("/oauth/import", h.Admin.KiroOAuth.ImportCredentials)
 		kiro.POST("/oauth/device-auth", h.Admin.KiroOAuth.StartDeviceAuth)
 		kiro.POST("/oauth/device-poll", h.Admin.KiroOAuth.PollDeviceAuth)
+		kiro.POST("/oauth/social-auth", h.Admin.KiroOAuth.StartSocialAuth)
+		kiro.POST("/oauth/social-exchange", h.Admin.KiroOAuth.ExchangeSocialAuth)
 	}
 }
 
