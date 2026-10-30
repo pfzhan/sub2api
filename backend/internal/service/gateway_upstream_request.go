@@ -25,10 +25,14 @@ const anthropicMessagesForeignOAuthReason = GatewayFailureReason("anthropic_mess
 // anthropicMessagesCredentialAllowed 判断账号凭据能否经 Anthropic Messages 协议
 // 出站。OAuth / setup-token 只对签发它的供应商有效（ChatGPT token 只认
 // chatgpt.com），送错协议既泄露凭据，上游 401 还会被误记到账号头上；
-// API Key 不受限：其上游可能同时兼容多种协议格式。
+// API Key 不受限：其上游可能同时兼容多种协议格式。Kiro 凭据只对 Kiro 上游
+// 有效，由 forwardKiro 单独处理。
 func anthropicMessagesCredentialAllowed(account *Account) bool {
 	if !account.IsOAuth() {
 		return true
+	}
+	if account.IsKiro() {
+		return false
 	}
 	spec, ok := domain.LookupPlatform(account.Platform)
 	return ok && spec.Gateway == domain.PlatformGatewayAnthropic

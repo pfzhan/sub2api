@@ -423,6 +423,13 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 	}
 
+	// Kiro 额度用尽与不同原因的 403 分别处理（见 ratelimit_kiro.go）。
+	if account.IsKiro() && (statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden) {
+		if handled, disable := s.handleKiroError(ctx, account, statusCode, responseBody, upstreamMsg); handled {
+			return disable
+		}
+	}
+
 	switch statusCode {
 	case 400:
 		// "organization has been disabled" → 永久禁用

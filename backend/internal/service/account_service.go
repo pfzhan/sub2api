@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -224,8 +223,8 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 
 // Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
-	if req.Platform == PlatformTypeSafe && req.Type != AccountTypeAPIKey {
-		return nil, errors.New("typesafe accounts only support apikey credentials")
+	if err := validatePlatformAccountType(req.Platform, req.Type); err != nil {
+		return nil, err
 	}
 	// 验证分组是否存在（如果指定了分组）
 	if len(req.GroupIDs) > 0 {
@@ -521,6 +520,9 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 		return nil
 	case PlatformTypeSafe:
 		// TypeSafe credentials are API keys; inference failures drive health and cooldown state.
+		return nil
+	case PlatformKiro:
+		// Kiro credentials are validated by token refresh when the account is created.
 		return nil
 	default:
 		if IsMultiProtocolAPIKeyProvider(account.Platform) {

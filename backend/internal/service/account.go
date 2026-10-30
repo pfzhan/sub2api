@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -980,6 +981,9 @@ func (a *Account) isModelMappingSupported(requestedModel string) bool {
 		}
 		if a.Platform == PlatformDeepseek {
 			return isDeepseekServableModel(requestedModel)
+		}
+		if a.Platform == PlatformKiro {
+			return kiro.IsKnownModel(requestedModel)
 		}
 		return true // 无映射 = 允许所有
 	}
