@@ -1966,4 +1966,55 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).not.toContain('7d S')
     expect(wrapper.text()).not.toContain('7d F')
   })
+
+  it('Kiro OAuth shows plan, monthly credits bar and credit totals', async () => {
+    getUsage.mockResolvedValue({
+      kiro_quota: {
+        plan: 'PRO',
+        email: 'dev@example.com',
+        used: 250.5,
+        limit: 1000,
+        resets_at: '2026-11-01T00:00:00Z',
+        items: [
+          { kind: 'base', label: 'Credits', used: 250.5, limit: 1000 },
+          { kind: 'bonus', label: 'Old bonus', used: 1, limit: 2, expired: true }
+        ]
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 5101, platform: 'kiro', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledWith(5101)
+    expect(wrapper.text()).toContain('PRO')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.kiroMonthly|25.05|2026-11-01T00:00:00Z')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.kiroCredits')
+  })
+
+  it('Kiro OAuth shows the reauth badge when the token is rejected', async () => {
+    getUsage.mockResolvedValue({ needs_reauth: true, error: 'HTTP 401: expired', error_code: 'unauthenticated' })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 5102, platform: 'kiro', type: 'oauth', extra: {} })
+      },
+      global: { stubs: { UsageProgressBar: true, AccountQuotaInfo: true } }
+    })
+
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.needsReauth')
+  })
 })

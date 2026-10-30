@@ -342,6 +342,63 @@
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
 
+    <!-- Kiro OAuth accounts: monthly credits from getUsageLimits -->
+    <template v-else-if="account.platform === 'kiro' && account.type === 'oauth'">
+      <div v-if="loading" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+      <div v-else-if="error" class="text-xs text-red-500">
+        {{ error }}
+      </div>
+      <div v-else-if="isForbidden" class="space-y-1">
+        <span
+          :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', forbiddenBadgeClass]"
+          :title="usageInfo?.forbidden_reason"
+        >
+          {{ forbiddenLabel }}
+        </span>
+      </div>
+      <div v-else-if="needsReauth" class="space-y-1">
+        <span class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
+          {{ t('admin.accounts.needsReauth') }}
+        </span>
+      </div>
+      <div v-else-if="usageInfo?.error" class="space-y-1">
+        <span
+          class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+          :title="usageInfo.error"
+        >
+          {{ usageErrorLabel }}
+        </span>
+      </div>
+      <div v-else-if="kiroQuota" class="space-y-1">
+        <div v-if="kiroQuota.plan" class="flex items-center gap-1">
+          <span
+            class="inline-block rounded bg-fuchsia-100 px-1.5 py-0.5 text-[10px] font-medium text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300"
+            :title="kiroQuota.email"
+          >
+            {{ kiroQuota.plan }}
+          </span>
+        </div>
+        <UsageProgressBar
+          :label="t('admin.accounts.usageWindow.kiroMonthly')"
+          :title="kiroQuotaTitle"
+          :utilization="kiroUtilization"
+          :resets-at="kiroQuota.resets_at"
+          :show-now-when-idle="true"
+          color="purple"
+        />
+        <div class="text-[10px] text-gray-500 dark:text-gray-400" :title="kiroQuotaTitle">
+          {{ t('admin.accounts.usageWindow.kiroCredits', { used: formatKiroCredits(kiroQuota.used), limit: formatKiroCredits(kiroQuota.limit) }) }}
+        </div>
+      </div>
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
     <!-- Grok OAuth accounts: passive xAI quota headers + local Sub2API usage -->
     <template v-else-if="account.platform === 'grok' && account.type === 'oauth'">
       <div v-if="loading" class="space-y-1.5">
@@ -817,6 +874,9 @@ const shouldFetchUsage = computed(() => {
     return props.account.type === 'oauth'
   }
   if (props.account.platform === 'openai') {
+    return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'kiro') {
     return props.account.type === 'oauth'
   }
   return false
@@ -1388,6 +1448,27 @@ const hasIneligibleTiers = computed(() => {
 
   const ineligibleTiers = loadCodeAssist.ineligibleTiers as unknown[] | undefined
   return Array.isArray(ineligibleTiers) && ineligibleTiers.length > 0
+})
+
+// Kiro 额度
+const kiroQuota = computed(() => usageInfo.value?.kiro_quota ?? null)
+
+const kiroUtilization = computed(() => {
+  const quota = kiroQuota.value
+  if (!quota || quota.limit <= 0) return 0
+  return (quota.used / quota.limit) * 100
+})
+
+const formatKiroCredits = (value: number) =>
+  Number.isInteger(value) ? String(value) : value.toFixed(2)
+
+// 悬停时列出各项额度：月度额度、赠送额度、试用额度
+const kiroQuotaTitle = computed(() => {
+  const items = kiroQuota.value?.items ?? []
+  return items
+    .filter((item) => !item.expired)
+    .map((item) => `${item.label}: ${formatKiroCredits(item.used)} / ${formatKiroCredits(item.limit)}`)
+    .join('\n')
 })
 
 // Antigravity 403 forbidden 状态

@@ -513,6 +513,8 @@ export default {
         }
       },
       usageWindow: {
+        kiroMonthly: '本月',
+        kiroCredits: '已用 {used} / {limit} 积分',
         statsTitle: '5小时窗口用量统计',
         statsTitleDaily: '每日用量统计',
         geminiProDaily: 'Pro',

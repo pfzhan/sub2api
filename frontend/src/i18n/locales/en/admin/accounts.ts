@@ -1745,6 +1745,8 @@ export default {
         noData: 'No usage data available for this account'
       },
       usageWindow: {
+        kiroMonthly: 'Mo',
+        kiroCredits: '{used} / {limit} credits used',
         statsTitle: '5-Hour Window Usage Statistics',
         statsTitleDaily: 'Daily Usage Statistics',
         geminiProDaily: 'Pro',

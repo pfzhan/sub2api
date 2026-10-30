@@ -294,18 +294,29 @@ func expiresAt(expiresIn int64) time.Time {
 }
 
 func postJSON(ctx context.Context, doer Doer, op, url string, body any, headers http.Header, out any) error {
-	if doer == nil {
-		return errors.New("kiro: http client is not configured")
-	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("kiro %s: encode request: %w", op, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	return doJSON(ctx, doer, op, http.MethodPost, url, payload, headers, out)
+}
+
+// doJSON 发送请求并把 2xx 响应解码到 out。payload 为 nil 时不带请求体。
+func doJSON(ctx context.Context, doer Doer, op, method, url string, payload []byte, headers http.Header, out any) error {
+	if doer == nil {
+		return errors.New("kiro: http client is not configured")
+	}
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return fmt.Errorf("kiro %s: build request: %w", op, err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json")
 	for key, values := range headers {
 		for _, v := range values {
