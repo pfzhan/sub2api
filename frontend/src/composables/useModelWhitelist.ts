@@ -535,6 +535,13 @@ export function getModelsByPlatform(platform: string): string[] {
       'hy4-preview', 'hy3', 'omen-alpha'
     ]
     case 'typesafe': return ['jev-latest']
+    // 与后端 internal/pkg/kiro/models.go 的模型表一致
+    case 'kiro': return [
+      'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-opus-5', 'claude-sonnet-5',
+      'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5',
+      'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5',
+      'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'
+    ]
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
     case 'baidu': return baiduModels

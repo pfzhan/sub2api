@@ -230,7 +230,7 @@
           </button>
         </div>
 
-        <!-- 多模型聚合平台：OpenCode 与平台清单中登记的其他多协议供应商 -->
+        <!-- 多模型聚合平台：OpenCode、平台清单中登记的其他多协议供应商，以及 Kiro -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-testid="platform-row-aggregators">
           <button
             type="button"
@@ -262,6 +262,20 @@
           >
             <PlatformIcon :platform="spec.id" size="sm" />
             {{ spec.display_name }}
+          </button>
+          <button
+            type="button"
+            data-testid="platform-button-kiro"
+            @click="form.platform = 'kiro'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'kiro'
+                ? 'bg-white text-fuchsia-600 shadow-sm dark:bg-dark-600 dark:text-fuchsia-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="kiro" size="sm" />
+            Kiro
           </button>
         </div>
       </div>
@@ -2486,7 +2500,7 @@
 
       <!-- OpenAI OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
       <div
-        v-if="(form.platform === 'openai' || form.platform === 'grok') && isOAuthFlow"
+        v-if="(form.platform === 'openai' || form.platform === 'grok' || form.platform === 'kiro') && isOAuthFlow"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
@@ -3770,7 +3784,14 @@
 
     <!-- Step 2: OAuth Authorization -->
     <div v-else class="space-y-5">
+      <KiroAuthPanel
+        v-if="form.platform === 'kiro'"
+        :proxy-id="form.proxy_id"
+        :creating="submitting"
+        @authorized="handleKiroAuthorized"
+      />
       <OAuthAuthorizationFlow
+        v-else
         ref="oauthFlowRef"
         :add-method="form.platform === 'anthropic' ? addMethod : 'oauth'"
         :auth-url="currentAuthUrl"
@@ -4230,6 +4251,7 @@ import {
   type OpenAIWSMode
 } from '@/utils/openaiWsMode'
 import OAuthAuthorizationFlow from './OAuthAuthorizationFlow.vue'
+import KiroAuthPanel from './KiroAuthPanel.vue'
 
 // Type for exposed OAuthAuthorizationFlow component
 // Note: defineExpose automatically unwraps refs, so we use the unwrapped types
@@ -4255,6 +4277,7 @@ const oauthStepTitle = computed(() => {
   if (form.platform === 'gemini') return t('admin.accounts.oauth.gemini.title')
   if (form.platform === 'antigravity') return t('admin.accounts.oauth.antigravity.title')
   if (form.platform === 'grok') return t('admin.accounts.oauth.grok.title')
+  if (form.platform === 'kiro') return t('admin.accounts.oauth.kiro.title')
   return t('admin.accounts.oauth.title')
 })
 
@@ -5198,6 +5221,11 @@ watch(
       modelRestrictionMode.value = 'mapping'
       form.concurrency = 1
       form.load_factor = null
+    }
+    // Kiro 只有 OAuth 一种账号类型
+    if (newPlatform === 'kiro') {
+      accountCategory.value = 'oauth-based'
+      addMethod.value = 'oauth'
     }
     if (newPlatform !== 'gemini' && newPlatform !== 'anthropic' && accountCategory.value === 'service_account') {
       accountCategory.value = 'oauth-based'
@@ -7208,6 +7236,15 @@ const handleAntigravityExchange = async (authCode: string) => {
   } finally {
     antigravityOAuth.loading.value = false
   }
+}
+
+// Kiro 凭据已由后端验证，补充模型映射后创建账号
+const handleKiroAuthorized = async (credentials: Record<string, unknown>) => {
+  const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+  if (modelMapping) {
+    credentials.model_mapping = modelMapping
+  }
+  await createAccountAndFinish('kiro', 'oauth', credentials)
 }
 
 // Grok OAuth 授权码兑换

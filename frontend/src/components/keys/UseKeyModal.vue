@@ -502,6 +502,9 @@ const clientTabs = computed((): TabConfig[] => {
       return [
         { id: 'systemone', label: t('keys.useKeyModal.cliTabs.systemOne'), icon: TerminalIcon }
       ]
+    // Kiro 只支持 Anthropic Messages 入站
+    case 'kiro':
+      return [{ id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon }]
     case 'deepseek':
     case 'minimax':
     case 'composite':
@@ -1337,6 +1340,7 @@ function generateRoutedCodexFiles(
     typesafe: 'TypeSafe / Jev',
     command_code: 'Command Code',
     cline: 'Cline',
+    kiro: 'Kiro',
     composite: 'Composite'
   }
   const label = labels[platform]

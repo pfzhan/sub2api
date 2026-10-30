@@ -319,6 +319,7 @@ export default {
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
+        kiro: 'Kiro',
       },
       cnProviders: {
         accountMode: {
@@ -1567,6 +1568,25 @@ export default {
           validateAndCreate: '验证并创建账号',
           pleaseEnterRefreshToken: '请输入 Refresh Token',
           failedToValidateRT: '验证 Refresh Token 失败'
+        },
+        // Kiro specific
+        kiro: {
+          title: 'Kiro 账号授权',
+          methodImport: '导入凭据',
+          methodBuilderId: 'AWS Builder ID 登录',
+          region: '区域',
+          regionHint: '凭据未注明区域时使用，默认 us-east-1',
+          importDesc: '粘贴 Kiro 的 refresh token，或 kiro-auth-token.json 的完整内容。IdC 凭据需包含 clientId 和 clientSecret。',
+          importPlaceholder: '粘贴 refresh token 或 JSON 凭据...',
+          validating: '验证中...',
+          validateAndCreate: '验证并创建账号',
+          importFailed: '导入 Kiro 凭据失败',
+          builderIdDesc: '点击开始登录后会打开 AWS 授权页面，确认页面上显示的代码与下方一致后完成授权，本页会自动创建账号。',
+          startLogin: '开始登录',
+          userCode: '授权码',
+          openLink: '授权页面',
+          waiting: '等待授权...',
+          loginFailed: 'Builder ID 登录失败'
         }
       },
       // Gemini specific (platform-wide)
@@ -1720,6 +1740,7 @@ export default {
       geminiAccount: 'Gemini 账号',
       antigravityAccount: 'Antigravity 账号',
       grokAccount: 'Grok 账号',
+      kiroAccount: 'Kiro 账号',
       inputMethod: '输入方式',
       reAuthorizedSuccess: '账号重新授权成功',
       // Test Modal

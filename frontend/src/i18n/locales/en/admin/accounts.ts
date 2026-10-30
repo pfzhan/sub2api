@@ -116,6 +116,7 @@ export default {
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
+        kiro: 'Kiro',
       },
       cnProviders: {
         accountMode: {
@@ -1476,7 +1477,26 @@ export default {
                     validateAndCreate: 'Validate & Create',
                     pleaseEnterRefreshToken: 'Please enter Refresh Token',
                     failedToValidateRT: 'Failed to validate Refresh Token'
-                  }
+                  },
+        // Kiro specific
+        kiro: {
+          title: 'Kiro Account Authorization',
+          methodImport: 'Import credentials',
+          methodBuilderId: 'AWS Builder ID login',
+          region: 'Region',
+          regionHint: 'Used when the credentials do not specify a region. Defaults to us-east-1',
+          importDesc: 'Paste a Kiro refresh token or the full content of kiro-auth-token.json. IdC credentials must include clientId and clientSecret.',
+          importPlaceholder: 'Paste a refresh token or JSON credentials...',
+          validating: 'Validating...',
+          validateAndCreate: 'Validate & Create',
+          importFailed: 'Failed to import Kiro credentials',
+          builderIdDesc: 'Start login opens the AWS authorization page. Check that the code shown there matches the one below and approve; the account is created automatically.',
+          startLogin: 'Start login',
+          userCode: 'User code',
+          openLink: 'Authorization page',
+          waiting: 'Waiting for authorization...',
+          loginFailed: 'Builder ID login failed'
+        }
                 },      // Gemini specific (platform-wide)
       gemini: {
         helpButton: 'Help',
@@ -1630,6 +1650,7 @@ export default {
       geminiAccount: 'Gemini Account',
       antigravityAccount: 'Antigravity Account',
       grokAccount: 'Grok Account',
+      kiroAccount: 'Kiro Account',
       inputMethod: 'Input Method',
       reAuthorizedSuccess: 'Account re-authorized successfully',
       // Test Modal
