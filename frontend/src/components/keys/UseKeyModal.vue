@@ -502,9 +502,6 @@ const clientTabs = computed((): TabConfig[] => {
       return [
         { id: 'systemone', label: t('keys.useKeyModal.cliTabs.systemOne'), icon: TerminalIcon }
       ]
-    // Kiro 只支持 Anthropic Messages 入站
-    case 'kiro':
-      return [{ id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon }]
     case 'deepseek':
     case 'minimax':
     case 'composite':
@@ -760,6 +757,7 @@ const currentFiles = computed((): FileConfig[] => {
   if (activeClientTab.value === 'opencode') {
     switch (props.platform) {
       case 'anthropic':
+      case 'kiro':
         return [generateOpenCodeConfig('anthropic', apiBase, apiKey)]
       case 'openai':
         return [generateOpenCodeConfig('openai', apiBase, apiKey)]
@@ -1322,6 +1320,7 @@ function generateRoutedCodexFiles(
     deepseek: 'deepseek-v4-pro',
     minimax: 'MiniMax-M3',
     opencode_go: 'glm-5.3',
+    kiro: 'claude-sonnet-4-6',
     composite: 'gpt-5.5'
   }
   const preferredModel = preferredModels[platform] || ''

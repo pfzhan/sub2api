@@ -40,8 +40,17 @@ func (s *kiroHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL string, acc
 
 // kiroEventFrame 按 AWS event stream 格式编码一个 event 帧。
 func kiroEventFrame(eventType, payload string) []byte {
+	return kiroFrame([][2]string{{":message-type", "event"}, {":event-type", eventType}}, payload)
+}
+
+// kiroExceptionFrame 编码一个流内异常帧。
+func kiroExceptionFrame(exceptionType, payload string) []byte {
+	return kiroFrame([][2]string{{":message-type", "exception"}, {":exception-type", exceptionType}}, payload)
+}
+
+func kiroFrame(headerPairs [][2]string, payload string) []byte {
 	var headers bytes.Buffer
-	for _, h := range [][2]string{{":message-type", "event"}, {":event-type", eventType}} {
+	for _, h := range headerPairs {
 		headers.WriteByte(byte(len(h[0])))
 		headers.WriteString(h[0])
 		headers.WriteByte(7)

@@ -1220,6 +1220,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeModelsList(c, platform, []string{typesafe.JevLatestModel})
 		return
 	}
+	if platform == service.PlatformKiro {
+		writeModelsList(c, platform, kiro.DefaultModelIDs())
+		return
+	}
 
 	writeModelsListResponse(c, claude.DefaultModels)
 }
