@@ -39,10 +39,15 @@ func (e SSEEvent) AppendTo(dst []byte) []byte {
 }
 
 // Usage 是本次响应的 token 用量。Kiro 不返回精确用量：输出按文本估算，
-// 输入由 contextUsagePercentage 反推，缺失时使用调用方给出的估算值。
+// 输入由 contextUsagePercentage 反推，缺失时使用调用方给出的估算值；缓存
+// 读写按 CachePlan 从输入中拆出。
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	CacheCreation5mTokens    int
+	CacheCreation1hTokens    int
 }
 
 // ConverterOptions 配置 Converter。
@@ -61,6 +66,8 @@ type ConverterOptions struct {
 	EstimatedInputTokens int
 	// CountTokens 估算文本 token 数，为空时按字符数粗略估算。
 	CountTokens func(string) int
+	// CachePlan 为空时输入全部按未缓存计算。
+	CachePlan *CachePlan
 }
 
 type blockKind string
@@ -247,23 +254,26 @@ func (c *Converter) withMessageStart(events []SSEEvent) []SSEEvent {
 			"content":       []any{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage": map[string]any{
-				"input_tokens":                c.opts.EstimatedInputTokens,
-				"output_tokens":               0,
-				"cache_creation_input_tokens": 0,
-				"cache_read_input_tokens":     0,
-			},
+			"usage":         usageMap(c.opts.CachePlan.split(c.opts.EstimatedInputTokens)),
 		},
 	})
 	return append([]SSEEvent{start}, events...)
 }
 
 func (c *Converter) usageMap() map[string]any {
+	return usageMap(c.usage)
+}
+
+func usageMap(u Usage) map[string]any {
 	return map[string]any{
-		"input_tokens":                c.usage.InputTokens,
-		"output_tokens":               c.usage.OutputTokens,
-		"cache_creation_input_tokens": 0,
-		"cache_read_input_tokens":     0,
+		"input_tokens":                u.InputTokens,
+		"output_tokens":               u.OutputTokens,
+		"cache_creation_input_tokens": u.CacheCreationInputTokens,
+		"cache_read_input_tokens":     u.CacheReadInputTokens,
+		"cache_creation": map[string]any{
+			"ephemeral_5m_input_tokens": u.CacheCreation5mTokens,
+			"ephemeral_1h_input_tokens": u.CacheCreation1hTokens,
+		},
 	}
 }
 
@@ -279,7 +289,9 @@ func (c *Converter) computeUsage() Usage {
 		total := int(math.Round(float64(ContextWindow(c.opts.UpstreamModel)) * c.contextUsagePercentage / 100))
 		input = max(total-output, 0)
 	}
-	return Usage{InputTokens: input, OutputTokens: output}
+	u := c.opts.CachePlan.split(input)
+	u.OutputTokens = output
+	return u
 }
 
 // ---- 内容块 ----

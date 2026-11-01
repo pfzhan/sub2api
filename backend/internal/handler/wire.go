@@ -119,8 +119,10 @@ func ProvideGatewayHandler(
 	coordinator *securityaudit.Coordinator,
 	geminiCachedContentService *service.GeminiCachedContentService,
 	kiroTokenProvider *service.KiroTokenProvider,
+	kiroPromptCache service.KiroPromptCache,
 ) *GatewayHandler {
 	gatewayService.SetKiroTokenProvider(kiroTokenProvider)
+	gatewayService.SetKiroPromptCache(kiroPromptCache)
 	h := NewGatewayHandler(gatewayService, openAIGatewayService, geminiCompatService, antigravityGatewayService,
 		userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool,
 		errorPassthroughService, contentModerationService, userMsgQueueService, cfg, settingService)

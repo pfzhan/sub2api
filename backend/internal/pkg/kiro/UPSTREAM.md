@@ -53,3 +53,4 @@ git log --oneline d91f950fd67df6a8be6d42f6f0164802b4813ee9..HEAD -- \
 - social 登录不启动本地回调服务，由管理员把浏览器跳转到的 `kiro://` 回调地址粘贴回来；回调地址里的 state 必须与发起登录时一致。
 - IAM Identity Center 登录与 Builder ID 共用设备码流程，SSO 区域与接口区域分开保存。
 - 额度汇总只计入未过期的条目，不按"前后三个月"的时间窗过滤。
+- Kiro 响应只有本次消耗的 credit（`meteringEvent`），没有缓存 token 数。AIClient2API 把缓存读写固定为 0；本包在 `prompt_cache.go` 中按 Anthropic prompt caching 的断点、回看块数和有效期规则在本地推算缓存读写，再按请求体字节比例从输入 token 中拆出。

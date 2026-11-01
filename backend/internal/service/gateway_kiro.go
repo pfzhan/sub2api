@@ -46,9 +46,16 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 
 	usage := up.conv.Usage()
 	return &ForwardResult{
-		RequestID:        up.requestID,
-		UpstreamHeaders:  up.resp.Header,
-		Usage:            ClaudeUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
+		RequestID:       up.requestID,
+		UpstreamHeaders: up.resp.Header,
+		Usage: ClaudeUsage{
+			InputTokens:              usage.InputTokens,
+			OutputTokens:             usage.OutputTokens,
+			CacheCreationInputTokens: usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+			CacheCreation5mTokens:    usage.CacheCreation5mTokens,
+			CacheCreation1hTokens:    usage.CacheCreation1hTokens,
+		},
 		Model:            parsed.Model,
 		UpstreamModel:    up.built.UpstreamModel,
 		Stream:           parsed.Stream,
@@ -135,6 +142,7 @@ func (s *GatewayService) openKiroUpstream(ctx context.Context, c *gin.Context, a
 		Tools:                built.Tools,
 		EstimatedInputTokens: estimatedInput,
 		CountTokens:          kiroCountTokens,
+		CachePlan:            s.kiroCachePlan(ctx, account, claudeBody, built.UpstreamModel),
 	})
 	return &kiroUpstream{
 		account:     account,

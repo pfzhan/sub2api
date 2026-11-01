@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -221,4 +222,60 @@ func TestGatewayService_ForwardKiroContextLimitReturnsPromptTooLong(t *testing.T
 	require.True(t, strings.HasPrefix(gjson.Get(rec.Body.String(), "error.message").String(), "prompt is too long"))
 	require.Zero(t, repo.rateLimitedCalls)
 	require.Zero(t, repo.setErrorCalls)
+}
+
+// kiroPromptCacheStub 是内存版的 KiroPromptCache，忽略有效期。
+type kiroPromptCacheStub struct {
+	keys map[string]bool
+}
+
+func (s *kiroPromptCacheStub) Lookup(_ context.Context, _ int64, keys []string) (map[string]bool, error) {
+	hits := map[string]bool{}
+	for _, k := range keys {
+		if s.keys[k] {
+			hits[k] = true
+		}
+	}
+	return hits, nil
+}
+
+func (s *kiroPromptCacheStub) Store(_ context.Context, _ int64, entries []kiro.PromptCacheEntry) error {
+	for _, e := range entries {
+		s.keys[e.Key] = true
+	}
+	return nil
+}
+
+func TestGatewayService_ForwardKiroReportsPromptCache(t *testing.T) {
+	upstream := &kiroHTTPUpstreamStub{}
+	svc := newKiroGatewayForTest(upstream, &rateLimitAccountRepoStub{})
+	svc.SetKiroPromptCache(&kiroPromptCacheStub{keys: map[string]bool{}})
+
+	system := strings.Repeat("s", 4000)
+	body := `{"model":"claude-sonnet-4-5","stream":true,"max_tokens":64,` +
+		`"system":[{"type":"text","text":"` + system + `","cache_control":{"type":"ephemeral"}}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}]}`
+	send := func() *ForwardResult {
+		upstream.resp = kiroEventStreamResponse(
+			kiroEventFrame("assistantResponseEvent", `{"content":"ok"}`),
+			kiroEventFrame("contextUsageEvent", `{"contextUsagePercentage":1}`),
+		)
+		result, rec, err := forwardKiroForTest(t, svc, body)
+		require.NoError(t, err)
+		require.Contains(t, rec.Body.String(), `"cache_read_input_tokens":`)
+		return result
+	}
+
+	first := send()
+	require.Zero(t, first.Usage.CacheReadInputTokens)
+	require.Positive(t, first.Usage.CacheCreation5mTokens)
+	require.Equal(t, first.Usage.CacheCreation5mTokens, first.Usage.CacheCreationInputTokens)
+
+	second := send()
+	require.Positive(t, second.Usage.CacheReadInputTokens)
+	require.Zero(t, second.Usage.CacheCreationInputTokens)
+	require.Equal(t,
+		first.Usage.InputTokens+first.Usage.CacheCreationInputTokens,
+		second.Usage.InputTokens+second.Usage.CacheReadInputTokens,
+		"两次请求的输入总量相同，只是拆分不同")
 }
