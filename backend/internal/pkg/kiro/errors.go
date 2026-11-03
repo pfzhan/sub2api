@@ -72,19 +72,23 @@ const (
 	ForbiddenQuota
 	// ForbiddenSuspended 是账号被停用或违反条款，需要人工处理。
 	ForbiddenSuspended
+	// ForbiddenThrottled 是以 403 返回的短时限流，按 429 冷却。
+	ForbiddenThrottled
 )
 
+// 参考实现只用这些文案区分"能否靠刷新恢复"，命中后标记凭据暂时不健康；这里
+// 的后果更重（额度冷却到下月、停用需人工恢复），所以只保留含义明确的文案。
+// "not allowed"、"disabled" 等泛化文案也会出现在模型或功能级的 403 里，归为
+// ForbiddenOther，由通用逻辑累计计数后再处理。
 var (
-	forbiddenQuotaPatterns     = []string{"quota", "limit exceeded", "payment required"}
+	forbiddenQuotaPatterns     = []string{"quota", "monthly", "payment required"}
+	forbiddenThrottlePatterns  = []string{"rate limit", "too many requests", "throttl"}
 	forbiddenSuspendedPatterns = []string{
 		"temporarily is suspended",
 		"temporarily suspended",
-		"disabled",
 		"violation of terms",
 		"terms of service",
 		"appeal",
-		"not authorized to access",
-		"not allowed",
 	}
 )
 
@@ -94,9 +98,17 @@ func ClassifyForbidden(body []byte) ForbiddenKind {
 	if text == "" {
 		return ForbiddenOther
 	}
+	if strings.EqualFold(ParseUpstreamError(body).Reason, "MONTHLY_REQUEST_COUNT") {
+		return ForbiddenQuota
+	}
 	for _, p := range forbiddenSuspendedPatterns {
 		if strings.Contains(text, p) {
 			return ForbiddenSuspended
+		}
+	}
+	for _, p := range forbiddenThrottlePatterns {
+		if strings.Contains(text, p) {
+			return ForbiddenThrottled
 		}
 	}
 	for _, p := range forbiddenQuotaPatterns {

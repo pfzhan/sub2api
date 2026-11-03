@@ -47,6 +47,8 @@ const (
 	continueText    = "Continue"
 	toolResultsText = "Tool results provided."
 	imageOnlyText   = "Image provided."
+	// emptyToolResultText 填充没有文本的工具结果，Kiro 不接受空文本。
+	emptyToolResultText = "(empty result)"
 )
 
 // GenerateURL 返回生成接口地址。q.* 端点要求 profileArn；没有 profile 的
@@ -426,9 +428,40 @@ func systemText(raw json.RawMessage) string {
 	return strings.TrimSpace(blocksText(contentBlocks(raw)))
 }
 
-// toolResultText 把 tool_result.content（字符串或块数组）转换成文本，图片丢弃。
-func toolResultText(raw json.RawMessage) string {
-	return blocksText(contentBlocks(raw))
+// toolResultText 把 tool_result.content（字符串或块数组）转换成文本。Kiro 的
+// toolResults 只接受文本：图片交给 keepImage 放到所在 user 消息的 images 里
+// （Claude Code 的 Read 读图片、浏览器截图都这样返回），文本里注明；没保留的
+// 图片和文档（如 Read 读 PDF）无法转发，也注明，否则模型只会看到一个空结果。
+// Kiro 不接受空文本。
+func toolResultText(raw json.RawMessage, keepImage func(claudeBlock) bool) string {
+	blocks := contentBlocks(raw)
+	text := blocksText(blocks)
+	attached, dropped, documents := 0, 0, 0
+	for _, b := range blocks {
+		switch b.Type {
+		case "image":
+			if keepImage(b) {
+				attached++
+			} else {
+				dropped++
+			}
+		case "document":
+			documents++
+		}
+	}
+	if attached > 0 {
+		text = joinNonEmpty(text, "["+strconv.Itoa(attached)+" image(s) from this tool result are attached to this message]", "\n")
+	}
+	if dropped > 0 {
+		text = joinNonEmpty(text, "["+strconv.Itoa(dropped)+" image(s) from this tool result omitted from history]", "\n")
+	}
+	if documents > 0 {
+		text = joinNonEmpty(text, "["+strconv.Itoa(documents)+" document(s) omitted: documents are not supported]", "\n")
+	}
+	if strings.TrimSpace(text) == "" {
+		text = emptyToolResultText
+	}
+	return text
 }
 
 // ---- history 构建 ----
@@ -467,9 +500,18 @@ func (b *historyBuilder) userInput(index int, m normMessage, current bool) *kiro
 		texts     []string
 		images    []kiroImage
 		omitted   int
+		documents int
 		results   []kiroToolResult
 		resultIDs = map[string]struct{}{}
 	)
+	keepImage := func(block claudeBlock) bool {
+		img, ok := toKiroImage(block)
+		if !ok || !keepImages {
+			return false
+		}
+		images = append(images, img)
+		return true
+	}
 	for _, block := range m.Blocks {
 		switch block.Type {
 		case "text":
@@ -486,27 +528,24 @@ func (b *historyBuilder) userInput(index int, m normMessage, current bool) *kiro
 				status = "error"
 			}
 			results = append(results, kiroToolResult{
-				Content:   []kiroText{{Text: toolResultText(block.Content)}},
+				Content:   []kiroText{{Text: toolResultText(block.Content, keepImage)}},
 				Status:    status,
 				ToolUseID: block.ToolUseID,
 			})
 		case "image":
-			img, ok := toKiroImage(block)
-			if !ok || !keepImages {
+			if !keepImage(block) {
 				omitted++
-				continue
 			}
-			images = append(images, img)
+		case "document":
+			documents++
 		}
 	}
 	content := strings.Join(texts, "\n")
 	if omitted > 0 {
-		note := "[此消息包含 " + strconv.Itoa(omitted) + " 张图片，已在历史记录中省略]"
-		if content == "" {
-			content = note
-		} else {
-			content += "\n" + note
-		}
+		content = joinNonEmpty(content, "[此消息包含 "+strconv.Itoa(omitted)+" 张图片，已在历史记录中省略]", "\n")
+	}
+	if documents > 0 {
+		content = joinNonEmpty(content, "["+strconv.Itoa(documents)+" document(s) omitted: documents are not supported]", "\n")
 	}
 	if index == 0 && b.systemForFirstUser != "" {
 		if strings.TrimSpace(content) == "" {
@@ -733,10 +772,15 @@ func buildToolEntries(tools []claudeTool, names *ToolNames) []kiroToolEntry {
 	entries := make([]kiroToolEntry, 0, len(tools)+1)
 	for _, tool := range tools {
 		lower := strings.ToLower(tool.Name)
-		if lower == "web_search" || lower == "websearch" || strings.TrimSpace(tool.Description) == "" {
+		if lower == "web_search" || lower == "websearch" {
 			continue
 		}
 		desc := tool.Description
+		if strings.TrimSpace(desc) == "" {
+			// Kiro 不接受空描述。OpenAI 的 function.description 是可选的，直接丢掉
+			// 会让模型无法调用该工具，历史里的 tool_use 也找不到对应定义。
+			desc = tool.Name
+		}
 		if runes := []rune(desc); len(runes) > maxToolDescriptionLength {
 			desc = string(runes[:maxToolDescriptionLength]) + "..."
 		}

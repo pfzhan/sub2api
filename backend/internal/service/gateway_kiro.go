@@ -455,7 +455,9 @@ func (s *GatewayService) relayKiroResponse(
 		return outcome, nil
 	}
 	if outcome.clientDisconnect || errors.Is(err, context.Canceled) {
+		// 上游已经产出的内容仍按用量计费。
 		outcome.clientDisconnect = true
+		conv.SettleUsage()
 		return outcome, nil
 	}
 	var se *kiroStreamError

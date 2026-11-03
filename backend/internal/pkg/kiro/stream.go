@@ -135,8 +135,17 @@ func NewConverter(opts ConverterOptions) *Converter {
 // Started 报告是否已经输出过 message_start，即客户端是否已经收到数据。
 func (c *Converter) Started() bool { return c.started }
 
-// Usage 返回用量，Finish 之后有效。
+// Usage 返回用量，Finish 或 SettleUsage 之后有效。
 func (c *Converter) Usage() Usage { return c.usage }
+
+// SettleUsage 在流被中断、没有正常 Finish 时按已收到的内容计算用量。客户端
+// 还没收到任何数据时用量保持为零。
+func (c *Converter) SettleUsage() {
+	if c.finished || !c.started {
+		return
+	}
+	c.usage = c.computeUsage()
+}
 
 // StopReason 返回结束原因，Finish 之后有效。
 func (c *Converter) StopReason() string { return c.stopReason }

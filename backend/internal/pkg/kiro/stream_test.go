@@ -180,3 +180,15 @@ func TestSSEEventAppendTo(t *testing.T) {
 	e := SSEEvent{Event: "message_stop", Data: []byte(`{"type":"message_stop"}`)}
 	require.Equal(t, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", string(e.AppendTo(nil)))
 }
+
+func TestConverterSettleUsageAfterInterruptedStream(t *testing.T) {
+	t.Parallel()
+	c := NewConverter(ConverterOptions{Model: "claude-haiku-4-5", EstimatedInputTokens: 100})
+	c.SettleUsage()
+	require.Zero(t, c.Usage(), "nothing sent to the client, nothing to bill")
+
+	c.Handle(Event{Kind: EventText, Text: "hello world"})
+	c.SettleUsage()
+	require.Equal(t, 100, c.Usage().InputTokens)
+	require.Positive(t, c.Usage().OutputTokens)
+}

@@ -83,3 +83,48 @@ func TestHandleKiroErrorLeavesOtherForbiddenToDefault(t *testing.T) {
 	require.Zero(t, repo.rateLimitedCalls)
 	require.Zero(t, repo.tempCalls)
 }
+
+func TestHandleUpstreamError_KiroForbiddenThrottleIsShortCooldown(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+
+	svc.HandleUpstreamError(context.Background(), kiroRateLimitAccount(), http.StatusForbidden, http.Header{},
+		[]byte(`{"message":"Rate limit exceeded"}`))
+
+	require.Zero(t, repo.setErrorCalls)
+	require.Equal(t, 1, repo.rateLimitedCalls)
+	require.WithinDuration(t, time.Now(), repo.lastRateLimitedAt, time.Minute, "throttle must not cool down to next month")
+}
+
+func TestHandleUpstreamError_KiroUnknownForbiddenCoolsDownBeforeDisabling(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetOpenAI403CounterCache(&openAI403CounterCacheStub{counts: []int64{1}})
+
+	svc.HandleUpstreamError(context.Background(), kiroRateLimitAccount(), http.StatusForbidden, http.Header{},
+		[]byte(`{"message":"User is not allowed to access model claude-opus-4.7"}`))
+
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.rateLimitedCalls)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Contains(t, repo.lastTempReason, "Kiro 403 temporary cooldown")
+}
+
+func TestHandleUpstreamError_Kiro401ForcesRefreshOfRejectedToken(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := kiroRateLimitAccount()
+	account.Credentials["expires_at"] = time.Now().Add(time.Hour).Format(time.RFC3339)
+	refresher := NewKiroTokenRefresher(nil)
+	require.False(t, refresher.NeedsRefresh(account, kiroTokenRefreshSkew))
+
+	svc.HandleUpstreamError(context.Background(), account, http.StatusUnauthorized, http.Header{},
+		[]byte(`{"message":"The bearer token included in the request is invalid."}`))
+
+	require.Equal(t, kiroTokenFingerprint("at"), repo.lastExtraUpdates[kiroRejectedTokenExtraKey])
+	require.True(t, refresher.NeedsRefresh(account, kiroTokenRefreshSkew), "rejected token must be refreshed even before expiry")
+
+	// 刷新换了新 token 后不再强制刷新。
+	account.Credentials["access_token"] = "at2"
+	require.False(t, refresher.NeedsRefresh(account, kiroTokenRefreshSkew))
+}

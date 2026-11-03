@@ -32,6 +32,13 @@ func TestClassifyForbidden(t *testing.T) {
 	require.Equal(t, ForbiddenSuspended, ClassifyForbidden([]byte(`{"message":"Your User ID temporarily is suspended. Contact support to appeal."}`)))
 	require.Equal(t, ForbiddenQuota, ClassifyForbidden([]byte(`{"message":"Monthly request limit exceeded","reason":"MONTHLY_REQUEST_COUNT"}`)))
 	require.Equal(t, ForbiddenOther, ClassifyForbidden([]byte(`{"message":"Forbidden"}`)))
+	require.Equal(t, ForbiddenQuota, ClassifyForbidden([]byte(`{"message":"You have reached the limit.","reason":"MONTHLY_REQUEST_COUNT"}`)))
+	// 短时限流不能按月度额度处理。
+	require.Equal(t, ForbiddenThrottled, ClassifyForbidden([]byte(`{"message":"Rate limit exceeded"}`)))
+	require.Equal(t, ForbiddenThrottled, ClassifyForbidden([]byte(`{"message":"Too many requests, please wait before trying again."}`)))
+	// 模型或功能级的 403 不能直接判为账号停用。
+	require.Equal(t, ForbiddenOther, ClassifyForbidden([]byte(`{"message":"User is not allowed to access model claude-opus-4.7"}`)))
+	require.Equal(t, ForbiddenOther, ClassifyForbidden([]byte(`{"message":"This feature is disabled"}`)))
 }
 
 func TestParseUpstreamError(t *testing.T) {

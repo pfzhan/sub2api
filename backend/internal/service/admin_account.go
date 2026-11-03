@@ -131,6 +131,7 @@ var duplicateAccountDiscardedExtraKeys = map[string]struct{}{
 	"antigravity_force_token_refresh":        {},
 	"antigravity_force_token_refresh_at":     {},
 	"antigravity_force_token_refresh_reason": {},
+	kiroRejectedTokenExtraKey:                {},
 	"drive_storage_limit":                    {},
 	"drive_storage_usage":                    {},
 	"drive_tier_updated_at":                  {},

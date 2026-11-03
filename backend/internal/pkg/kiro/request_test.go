@@ -79,9 +79,12 @@ func TestBuildRequestHistoryAndToolResults(t *testing.T) {
 	require.Equal(t, "success", results[0].Get("status").String())
 
 	tools := cur.Get("userInputMessageContext.tools").Array()
-	require.Len(t, tools, 2)
+	require.Len(t, tools, 3)
 	require.Equal(t, "read_file", tools[0].Get("toolSpecification.name").String())
 	require.Equal(t, "default", tools[1].Get("cachePoint.type").String())
+	// 空描述的工具保留下来，用工具名作描述。
+	require.Equal(t, "no_desc", tools[2].Get("toolSpecification.name").String())
+	require.Equal(t, "no_desc", tools[2].Get("toolSpecification.description").String())
 }
 
 func TestBuildRequestTrailingAssistantBecomesHistory(t *testing.T) {
@@ -217,4 +220,50 @@ func TestModelMapping(t *testing.T) {
 	require.Equal(t, 1_000_000, ContextWindow("claude-opus-4-7"))
 	require.Equal(t, 200_000, ContextWindow("unknown"))
 	require.Contains(t, DefaultModelIDs(), DefaultTestModel)
+}
+
+func TestBuildRequestToolResultImagesAndDocuments(t *testing.T) {
+	t.Parallel()
+	toolTurn := func(id, content string) string {
+		return `{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Read","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + content + `}]}`
+	}
+	image := `[{"type":"text","text":"shot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1n"}}]`
+	filler := ""
+	for i := 0; i < historyImageWindow; i++ {
+		filler += `,{"role":"assistant","content":"ok"},{"role":"user","content":"next"}`
+	}
+	r := build(t, `{"tools":[{"name":"Read","description":"Read a file","input_schema":{"type":"object"}}],"messages":[
+		{"role":"user","content":"start"},
+		`+toolTurn("old", image)+filler+`,
+		`+toolTurn("pdf", `[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"cGRm"}}]`)+`,
+		`+toolTurn("empty", `""`)+`,
+		`+toolTurn("cur", image)+`
+	]}`, BuildOptions{Model: "claude-opus-4-7"})
+
+	text := func(item gjson.Result) string {
+		return item.Get("userInputMessage.userInputMessageContext.toolResults.0.content.0.text").String()
+	}
+	history := r.Get("conversationState.history").Array()
+	resultByID := map[string]gjson.Result{}
+	for _, item := range history {
+		if id := item.Get("userInputMessage.userInputMessageContext.toolResults.0.toolUseId").String(); id != "" {
+			resultByID[id] = item
+		}
+	}
+
+	// 超出保留窗口的截图不转发，工具结果里注明。
+	old := resultByID["old"]
+	require.Equal(t, "shot\n[1 image(s) from this tool result omitted from history]", text(old))
+	require.False(t, old.Get("userInputMessage.images").Exists())
+	require.NotContains(t, old.Get("userInputMessage.content").String(), "已在历史记录中省略")
+
+	require.Equal(t, "[1 document(s) omitted: documents are not supported]", text(resultByID["pdf"]))
+	require.Equal(t, emptyToolResultText, text(resultByID["empty"]))
+
+	// 当前消息的截图放到 images 里。
+	cur := r.Get("conversationState.currentMessage")
+	require.Equal(t, "shot\n[1 image(s) from this tool result are attached to this message]", text(cur))
+	require.Equal(t, "png", cur.Get("userInputMessage.images.0.format").String())
+	require.Equal(t, "aW1n", cur.Get("userInputMessage.images.0.source.bytes").String())
 }
