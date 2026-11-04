@@ -2186,6 +2186,22 @@ func TestNewModelPricingAliasesRetainExplicitOverrides(t *testing.T) {
 	}
 }
 
+func TestBundledPricingCoversSonnet5(t *testing.T) {
+	data, err := os.ReadFile("../../resources/model-pricing/model_prices_and_context_window.json")
+	require.NoError(t, err)
+	catalog := &PricingService{}
+	catalog.pricingData, err = catalog.parsePricingData(data)
+	require.NoError(t, err)
+
+	pricing := catalog.GetModelPricing("claude-sonnet-5")
+	require.NotNil(t, pricing)
+	require.InDelta(t, 2e-6, pricing.InputCostPerToken, 1e-12)
+	require.InDelta(t, 10e-6, pricing.OutputCostPerToken, 1e-12)
+	require.InDelta(t, 0.2e-6, pricing.CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 2.5e-6, pricing.CacheCreationInputTokenCost, 1e-12)
+	require.InDelta(t, 4e-6, pricing.CacheCreationInputTokenCostAbove1hr, 1e-12)
+}
+
 func TestAstraUltrafastPricingUsesSixTimesStandard(t *testing.T) {
 	data, err := os.ReadFile("../../resources/model-pricing/model_prices_and_context_window.json")
 	require.NoError(t, err)
