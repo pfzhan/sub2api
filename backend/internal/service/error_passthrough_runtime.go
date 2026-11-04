@@ -56,7 +56,8 @@ func applyErrorPassthroughRule(
 		status = *rule.ResponseCode
 	}
 
-	errMsg = ExtractUpstreamErrorMessage(responseBody)
+	// 原样透传上游消息前脱敏 token 类查询参数，与 ops 记录的口径一致。
+	errMsg = sanitizeUpstreamErrorMessage(ExtractUpstreamErrorMessage(responseBody))
 	if !rule.PassthroughBody && rule.CustomMessage != nil {
 		errMsg = *rule.CustomMessage
 	}

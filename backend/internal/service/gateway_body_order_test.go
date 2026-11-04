@@ -165,6 +165,27 @@ func TestEnforceCacheControlLimit_CountsToolsAndPreservesMessageAnchorsFirst(t *
 	require.False(t, gjson.GetBytes(result, "tools.0.cache_control").Exists())
 }
 
+func TestEnforceCacheControlLimit_TopLevelCacheControlUsesSlot(t *testing.T) {
+	// 顶层自动缓存占一个名额：再加 4 个显式断点会被上游拒绝，只能保留 3 个。
+	body := []byte(`{"cache_control":{"type":"ephemeral"},"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"m1","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"a1"}]},{"role":"user","content":[{"type":"text","text":"m2","cache_control":{"type":"ephemeral"}},{"type":"text","text":"m3"}]}],"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral"}}]}`)
+
+	result := enforceCacheControlLimit(body)
+
+	require.True(t, gjson.GetBytes(result, "cache_control").Exists())
+	require.Equal(t, 4, strings.Count(string(result), `"cache_control"`), "顶层 1 个 + 显式 3 个")
+	require.False(t, gjson.GetBytes(result, "tools.0.cache_control").Exists())
+	require.True(t, gjson.GetBytes(result, "system.0.cache_control").Exists())
+}
+
+func TestEnforceCacheControlLimit_TopLevelNoOpDoesNotUseSlot(t *testing.T) {
+	// 最后一个块已带同 TTL 的显式断点时自动缓存不生效，4 个显式断点都保留。
+	body := []byte(`{"cache_control":{"type":"ephemeral"},"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"m1","cache_control":{"type":"ephemeral"}},{"type":"text","text":"m2","cache_control":{"type":"ephemeral","ttl":"5m"}}]}],"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral"}}]}`)
+
+	result := enforceCacheControlLimit(body)
+
+	require.Equal(t, 5, strings.Count(string(result), `"cache_control"`))
+}
+
 func TestInjectAnthropicCacheControlTTL1h_OnlyUpdatesExistingEphemeralCacheControl(t *testing.T) {
 	body := []byte(`{"alpha":1,"cache_control":{"type":"ephemeral"},"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"5m"}},{"type":"text","text":"plain"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}},{"type":"text","text":"non","cache_control":{"type":"persistent","ttl":"5m"}}]}],"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral"}}],"omega":2}`)
 

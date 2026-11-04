@@ -1067,7 +1067,8 @@ func enforceCacheControlLimit(body []byte) []byte {
 	return normalizeCacheControlTTLOrder(enforceCacheControlBlockLimit(body))
 }
 
-// enforceCacheControlBlockLimit 强制执行 cache_control 块数量限制（最多 4 个）
+// enforceCacheControlBlockLimit 强制执行 cache_control 块数量限制（最多 4 个，
+// 顶层自动缓存占用其中一个，见 topLevelCacheControlUsesSlot）。
 // 超限时优先移除工具断点，再移除 messages 断点，最后才移除 system 断点。
 func enforceCacheControlBlockLimit(body []byte) []byte {
 	if len(body) == 0 {
@@ -1092,8 +1093,12 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		logger.LegacyPrintf("service.gateway", "%s", item.log)
 	}
 
+	limit := maxCacheControlBlocks
+	if topLevelCacheControlUsesSlot(out) {
+		limit--
+	}
 	count := len(messagePaths) + len(toolPaths) + len(systemPaths)
-	if count <= maxCacheControlBlocks {
+	if count <= limit {
 		if modified {
 			return out
 		}
@@ -1101,7 +1106,7 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 	}
 
 	// 超限：优先从 tools 中移除，再从 messages 中移除，最后才从 system 中移除。
-	remaining := count - maxCacheControlBlocks
+	remaining := count - limit
 	for i := len(toolPaths) - 1; i >= 0 && remaining > 0; i-- {
 		path := toolPaths[i]
 		if !gjson.GetBytes(out, path).Exists() {
@@ -1150,6 +1155,34 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		return out
 	}
 	return body
+}
+
+// topLevelCacheControlUsesSlot 报告顶层 cache_control（自动缓存）是否占用一个
+// 断点名额。自动缓存的断点落在最后一个可缓存块上，占 4 个名额中的一个；最后
+// 一个块已带相同 TTL 的显式断点时，自动缓存不生效，不另占名额。
+func topLevelCacheControlUsesSlot(body []byte) bool {
+	top := gjson.GetBytes(body, "cache_control")
+	if !top.Exists() {
+		return false
+	}
+	messages := gjson.GetBytes(body, "messages").Array()
+	if len(messages) == 0 {
+		return true
+	}
+	var explicit gjson.Result
+	if blocks := messages[len(messages)-1].Get("content").Array(); len(blocks) > 0 {
+		explicit = blocks[len(blocks)-1].Get("cache_control")
+	}
+	if !explicit.Exists() {
+		return true
+	}
+	ttl := func(cc gjson.Result) string {
+		if v := cc.Get("ttl").String(); v != "" {
+			return v
+		}
+		return "5m"
+	}
+	return ttl(explicit) != ttl(top)
 }
 
 // normalizeCacheControlTTLOrder raises earlier ephemeral breakpoints to 1h when

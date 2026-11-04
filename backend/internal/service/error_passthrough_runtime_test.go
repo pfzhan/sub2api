@@ -380,3 +380,34 @@ func newNonFailoverPassthroughRule(statusCode int, keyword string, respCode int,
 		CustomMessage:   &customMessage,
 	}
 }
+
+// passthrough_body 规则把上游消息原样带给调用方前，要和 ops 记录一样脱敏
+// access_token / refresh_token 等查询参数。
+func TestGatewayHandleErrorResponse_PassthroughBodyRedactsTokenQueryParams(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	rule := newNonFailoverPassthroughRule(http.StatusUnprocessableEntity, "invalid", http.StatusUnprocessableEntity, "")
+	rule.PassthroughBody = true
+	rule.CustomMessage = nil
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{rule})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	respBody := []byte(`{"error":{"message":"invalid request to https://relay.example/v1/messages?access_token=at-secret&refresh_token=rt-secret"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusUnprocessableEntity,
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+		Header:     http.Header{},
+	}
+	account := &Account{ID: 300, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_, err := (&GatewayService{}).handleErrorResponse(context.Background(), resp, c, account)
+	require.Error(t, err)
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "at-secret")
+	assert.NotContains(t, rec.Body.String(), "rt-secret")
+	assert.Contains(t, rec.Body.String(), "access_token=***")
+	assert.Contains(t, rec.Body.String(), "invalid request to https://relay.example/v1/messages")
+}

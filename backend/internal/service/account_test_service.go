@@ -538,6 +538,14 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		if authToken == "" {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
+		// 与真实转发一致：自定义中继生效时测试请求也发往中继。
+		if customURL := account.GetEffectiveCustomBaseURL(); customURL != "" {
+			validatedURL, err := s.validateUpstreamBaseURL(customURL)
+			if err != nil {
+				return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid custom base URL: %s", err.Error()))
+			}
+			apiURL = buildAnthropicCustomRelayURL(validatedURL, "/v1/messages", account)
+		}
 	} else if account.Type == "apikey" {
 		authToken = account.GetCredential("api_key")
 		if authToken == "" {
@@ -602,11 +610,8 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
 
-	// Get proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	// Get proxy URL（自定义中继生效时代理作为查询参数交给中继）
+	proxyURL := account.AnthropicUpstreamProxyURL()
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {

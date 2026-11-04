@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -67,6 +68,28 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if account != nil && account.IsBedrock() {
 		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for Bedrock")
 		return nil
+	}
+	// Vertex 服务账号没有对应的 count_tokens 构建路径；继续往下会把 Google
+	// access token 当成 x-api-key 发往 api.anthropic.com，401 后账号被停用。
+	if account != nil && account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
+		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for Vertex service accounts")
+		return nil
+	}
+
+	// Beta policy 与 Forward 一致：按客户端请求的模型求值一次，命中 block 返回 400，
+	// filter 集合写入 gin context 供 buildCountTokensRequest 复用。
+	if account != nil && account.Platform == PlatformAnthropic && c != nil {
+		policy := s.evaluateBetaPolicy(ctx, c.GetHeader("anthropic-beta"), account, parsed.Model)
+		if policy.blockErr != nil {
+			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", policy.blockErr.Message)
+			return policy.blockErr
+		}
+		filterSet := policy.filterSet
+		if filterSet == nil {
+			filterSet = map[string]struct{}{}
+		}
+		c.Set(betaPolicyFilterSetKey, filterSet)
 	}
 
 	body := parsed.Body.Bytes()
@@ -162,12 +185,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	acceptedWireBody := wireBody
 
 	// 获取代理URL（自定义 base URL 模式下，proxy 通过 buildCustomRelayURL 作为查询参数传递）
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		if !account.IsCustomBaseURLEnabled() || account.GetCustomBaseURL() == "" {
-			proxyURL = account.Proxy.URL()
-		}
-	}
+	proxyURL := account.AnthropicUpstreamProxyURL()
 
 	// 发送请求
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
@@ -175,6 +193,36 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		s.recordCountTokensTransportError(ctx, c, account, err, nil)
 		s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Request failed")
 		return fmt.Errorf("upstream request failed: %w", err)
+	}
+
+	// 与 Messages 一致：OAuth 账号的 403 先在同一账号上退避重试，重试耗尽才进入下面的
+	// 错误处理标记账号。否则一次偶发 403 在 count_tokens 上就会停用 Messages 能扛过去的账号。
+	retryStart := time.Now()
+	for attempt := 1; account.IsOAuth() && s.shouldRetryUpstreamError(account, resp.StatusCode) && attempt < maxRetryAttempts; attempt++ {
+		delay := retryBackoffDelay(attempt)
+		if remaining := maxRetryElapsed - time.Since(retryStart); delay > remaining {
+			delay = remaining
+		}
+		if delay <= 0 {
+			break
+		}
+		retryReq, retryWireBody, buildErr := s.buildCountTokensRequest(ctx, c, account, body, token, tokenType, reqModel, shouldMimicClaudeCode)
+		if buildErr != nil {
+			break
+		}
+		logger.LegacyPrintf("service.gateway", "count_tokens account %d: upstream error %d, retry %d/%d after %v",
+			account.ID, resp.StatusCode, attempt, maxRetryAttempts, delay)
+		_ = resp.Body.Close()
+		if err := sleepWithContext(ctx, delay); err != nil {
+			return err
+		}
+		resp, err = s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		if err != nil {
+			s.recordCountTokensTransportError(ctx, c, account, err, nil)
+			s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Request failed")
+			return fmt.Errorf("upstream request failed: %w", err)
+		}
+		acceptedWireBody = retryWireBody
 	}
 
 	// 读取响应体
@@ -471,11 +519,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 			targetURL = validatedURL + "/v1/messages/count_tokens?beta=true"
 		}
-	} else if account.IsCustomBaseURLEnabled() {
-		customURL := account.GetCustomBaseURL()
-		if customURL == "" {
-			return nil, nil, fmt.Errorf("custom_base_url is enabled but not configured for account %d", account.ID)
-		}
+	} else if customURL := account.GetEffectiveCustomBaseURL(); customURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(customURL)
 		if err != nil {
 			return nil, nil, err

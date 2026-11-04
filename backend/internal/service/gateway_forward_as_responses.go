@@ -130,17 +130,19 @@ func (s *GatewayService) ForwardAsResponses(
 	// 7. Enforce cache_control block limit
 	anthropicBody = enforceCacheControlLimit(anthropicBody)
 
+	// 与 /v1/messages 一致：全局 1h TTL 注入开启时，把已有 ephemeral 断点改为 1h。
+	if s.shouldInjectAnthropicCacheTTL1h(ctx, account) {
+		anthropicBody = injectAnthropicCacheControlTTL1h(anthropicBody)
+	}
+
 	// 8. Get access token
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, fmt.Errorf("get access token: %w", err)
 	}
 
-	// 9. Get proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	// 9. Get proxy URL（自定义 base URL 模式下，proxy 通过 buildCustomRelayURL 作为查询参数传递）
+	proxyURL := account.AnthropicUpstreamProxyURL()
 
 	// 10. Build upstream request
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)

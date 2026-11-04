@@ -2598,6 +2598,24 @@ func (a *Account) GetCustomBaseURL() string {
 	return a.GetExtraString("custom_base_url")
 }
 
+// GetEffectiveCustomBaseURL 返回实际生效的自定义中继地址：开关打开且地址非空才生效，
+// 否则返回空串，请求按官方地址和账号代理发出。URL 构建与代理选择都以此为准。
+func (a *Account) GetEffectiveCustomBaseURL() string {
+	if !a.IsCustomBaseURLEnabled() {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCustomBaseURL())
+}
+
+// AnthropicUpstreamProxyURL 返回直连上游时使用的代理地址。自定义中继生效时代理通过
+// buildCustomRelayURL 作为查询参数交给中继，连接中继本身不走代理。
+func (a *Account) AnthropicUpstreamProxyURL() string {
+	if a.ProxyID == nil || a.Proxy == nil || a.GetEffectiveCustomBaseURL() != "" {
+		return ""
+	}
+	return a.Proxy.URL()
+}
+
 // IsCacheTTLOverrideEnabled 检查是否启用缓存 TTL 强制替换
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
 // 启用后将所有 cache creation tokens 归入指定的 TTL 类型（5m 或 1h）
