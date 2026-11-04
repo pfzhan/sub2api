@@ -25,6 +25,8 @@ func TestResolveThinkingProtocol(t *testing.T) {
 		{"kimi-k3 platform", "kimi-k3", ThinkingProtocolPassbackRequired},
 		{"kimi code bare k3", "k3", ThinkingProtocolPassbackRequired},
 		{"kimi code bare k3-256k", "k3-256k", ThinkingProtocolPassbackRequired},
+		{"kimi code bare k3.1-pro", "k3.1-pro", ThinkingProtocolPassbackRequired},
+		{"kimi code bare k3.1-pro-highspeed", "k3.1-pro-highspeed", ThinkingProtocolPassbackRequired},
 		{"moonshot-v1", "moonshot-v1-32k", ThinkingProtocolPassbackRequired},
 		{"glm-5.1", "glm-5.1", ThinkingProtocolPassbackRequired},
 		{"qwen-2 thinking variant", "qwen-2-72b-thinking", ThinkingProtocolPassbackRequired},

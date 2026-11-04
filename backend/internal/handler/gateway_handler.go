@@ -1224,6 +1224,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeModelsList(c, platform, kiro.DefaultModelIDs())
 		return
 	}
+	if platform == service.PlatformKimi {
+		writeModelsList(c, platform, service.ProviderDefaultModelIDs(platform))
+		return
+	}
 
 	writeModelsListResponse(c, claude.DefaultModels)
 }
@@ -1317,8 +1321,9 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 		}
 		platformModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
 		if len(platformModels) == 0 && (platform != service.PlatformOpenAI || platformModels == nil) {
-			// CN 供应商没有静态默认模型列表（defaultModelIDsForPlatform 的
-			// default 分支是 Claude 列表），composite 下只暴露账号映射键。
+			// 多协议供应商不回落静态列表：Kimi 未配映射账号的内置模型已由
+			// GetAvailableModels 按接入模式补入，其余 CN 供应商的 default 分支是
+			// Claude 列表，composite 下只暴露账号映射键。
 			if _, ok := schedulablePlatforms[platform]; ok && !service.IsMultiProtocolAPIKeyProvider(platform) {
 				platformModels = defaultModelIDsForPlatform(platform)
 			}
@@ -1515,6 +1520,8 @@ func defaultModelIDsForPlatform(platform string) []string {
 		return []string{"jev-latest"}
 	case service.PlatformKiro:
 		return kiro.DefaultModelIDs()
+	case service.PlatformKimi:
+		return service.ProviderDefaultModelIDs(platform)
 	case service.PlatformComposite:
 		ids := make([]string, 0)
 		seen := make(map[string]struct{})

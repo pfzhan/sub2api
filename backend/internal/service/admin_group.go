@@ -303,6 +303,8 @@ func defaultModelsListCandidateIDs(platform string) []string {
 		return []string{typesafe.JevLatestModel}
 	case PlatformKiro:
 		return kiro.DefaultModelIDs()
+	case PlatformKimi:
+		return ProviderDefaultModelIDs(platform)
 	case PlatformComposite:
 		return compositeDefaultModelsListCandidateIDs()
 	default:

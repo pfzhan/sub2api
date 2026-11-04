@@ -71,7 +71,7 @@ func isOpenAIOAuthServableModel(requestedModel string) bool {
 		return true // 空模型交由上层必填校验处理
 	}
 	// Kimi Code 官方 bare model ID：无厂商前缀，prefix 黑名单挡不住。
-	if model == "k3" || model == "k3-256k" {
+	if model == "k3" || model == "k3-256k" || model == "k3.1-pro" || model == "k3.1-pro-highspeed" {
 		return false
 	}
 	for _, prefix := range openAIOAuthForeignModelPrefixes {

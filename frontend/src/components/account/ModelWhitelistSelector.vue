@@ -165,6 +165,8 @@ const props = withDefaults(defineProps<{
   modelMappings?: { from: string; to: string }[]
   platform?: string
   platforms?: string[]
+  // 多协议供应商的接入模式（payg / coding），用于选取该模式的预置模型
+  accountMode?: string
   accountId?: number
   syncCredentials?: {
     platform: string
@@ -238,7 +240,7 @@ const availableOptions = computed(() => {
 
   const allowedModels = new Set<string>()
   for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
+    for (const model of getModelsByPlatform(platform, props.accountMode)) {
       allowedModels.add(model)
     }
   }
@@ -298,7 +300,7 @@ const handleEnter = () => {
 const fillRelated = () => {
   const newModels = [...props.modelValue]
   for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
+    for (const model of getModelsByPlatform(platform, props.accountMode)) {
       if (!newModels.includes(model)) {
         newModels.push(model)
       }

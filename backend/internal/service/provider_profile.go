@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // ProviderEndpoints 是多协议 API Key 供应商在某个接入模式下的官方默认端点与
 // 内置分流规则。账号凭证里的 base_url / api_base_urls / protocol_rules 仍优先于这里。
@@ -12,6 +15,9 @@ type ProviderEndpoints struct {
 	// ProtocolRules 是按模型分流的内置默认表（首条命中生效）；为空表示该模式
 	// 不按模型分流，由账号 api_protocol 决定上游协议。
 	ProtocolRules []ProtocolRule
+	// DefaultModels 是该模式下官方在售的模型 ID。未配置 model_mapping 的账号在
+	// /v1/models 中按这里列出；为空表示没有内置列表。
+	DefaultModels []string
 }
 
 // ProviderRouting 决定多协议供应商账号如何选择上游协议。
@@ -99,12 +105,20 @@ var providerProfiles = map[string]*ProviderProfile{
 					APIProtocolResponses:       DefaultKimiPayGBaseURL,
 					APIProtocolAnthropic:       DefaultKimiPayGAnthropicBaseURL,
 				},
+				// 开放平台模型列表：https://platform.kimi.ai/docs/models
+				// K2 系列自 2026-11-01 起不对新用户开放，不再列出。
+				DefaultModels: []string{"kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3"},
 			},
 			AccountModeCoding: {
 				BaseURLs: map[string]string{
 					APIProtocolChatCompletions: DefaultKimiCodingBaseURL,
 					APIProtocolResponses:       DefaultKimiCodingBaseURL,
 					APIProtocolAnthropic:       DefaultKimiCodingAnthropicBaseURL,
+				},
+				// Kimi Code 会员模型 ID 不带 kimi- 前缀：https://www.kimi.com/code/docs/en/
+				DefaultModels: []string{
+					"k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k",
+					"kimi-for-coding", "kimi-for-coding-highspeed",
 				},
 			},
 		},
@@ -228,6 +242,36 @@ func LookupProviderProfile(platform string) *ProviderProfile {
 	return providerProfiles[platform]
 }
 
+// ProviderDefaultModelIDs 返回多协议供应商各接入模式内置模型 ID 的并集，默认模式在前；
+// 没有内置列表时为 nil。
+func ProviderDefaultModelIDs(platform string) []string {
+	profile := LookupProviderProfile(platform)
+	if profile == nil {
+		return nil
+	}
+	modes := make([]string, 0, len(profile.Modes))
+	for mode := range profile.Modes {
+		if mode != profile.DefaultMode {
+			modes = append(modes, mode)
+		}
+	}
+	sort.Strings(modes)
+	modes = append([]string{profile.DefaultMode}, modes...)
+
+	var ids []string
+	seen := make(map[string]struct{})
+	for _, mode := range modes {
+		for _, id := range profile.Modes[mode].DefaultModels {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (a *Account) providerProfile() *ProviderProfile {
 	if a == nil {
 		return nil
@@ -243,6 +287,15 @@ func (a *Account) defaultProviderBaseURL(protocol string) string {
 		return ""
 	}
 	return profile.DefaultBaseURL(a.GetCredential("account_mode"), protocol)
+}
+
+// providerDefaultModels 按账号 account_mode 返回供应商内置模型 ID；没有内置列表时为 nil。
+func (a *Account) providerDefaultModels() []string {
+	profile := a.providerProfile()
+	if profile == nil {
+		return nil
+	}
+	return profile.Endpoints(a.GetCredential("account_mode")).DefaultModels
 }
 
 // providerSupportsProtocol 报告账号所在供应商在其 account_mode 下是否提供该协议的原生端点。

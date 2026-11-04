@@ -1677,6 +1677,7 @@
                 v-model="allowedModels"
                 :model-mappings="modelMappings"
                 :platform="form.platform"
+                :account-mode="accountMode"
                 :sync-credentials="syncPreviewCredentials"
                 @upstream-synced="upstreamModelsPreviewed = true"
               />
@@ -2549,6 +2550,7 @@
               v-model="allowedModels"
               :model-mappings="modelMappings"
               :platform="form.platform"
+              :account-mode="accountMode"
               :sync-credentials="syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
             />
@@ -5125,7 +5127,7 @@ watch(
         .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
         .catch(() => { tlsFingerprintProfiles.value = [] })
       // Modal opened - fill related models
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      allowedModels.value = [...getModelsByPlatform(form.platform, accountMode.value)]
       // Antigravity: 默认使用映射模式并填充默认映射
       if (form.platform === 'antigravity') {
         antigravityModelRestrictionMode.value = 'mapping'
@@ -5328,10 +5330,16 @@ watch(
   [modelRestrictionMode, () => form.platform],
   ([newMode]) => {
     if (newMode === 'whitelist') {
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      allowedModels.value = [...getModelsByPlatform(form.platform, accountMode.value)]
     }
   }
 )
+// Kimi 按量付费与 Kimi Code 的模型 ID 不同，切换接入模式时重新预填
+watch(accountMode, (mode) => {
+  if (form.platform === 'kimi' && modelRestrictionMode.value === 'whitelist') {
+    allowedModels.value = [...getModelsByPlatform(form.platform, mode)]
+  }
+})
 
 watch(
   [antigravityModelRestrictionMode, () => form.platform],

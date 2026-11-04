@@ -229,13 +229,14 @@ const yiModels = [
   'yi-1.5-34b-chat', 'yi-1.5-9b-chat', 'yi-1.5-6b-chat'
 ]
 
-// Moonshot/Kimi
-const moonshotModels = [
-  'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k',
-  'kimi-latest',
-  'kimi-for-coding',
-  'kimi-k2'
+// Moonshot/Kimi：与后端 provider_profile.go 的 DefaultModels 一致。
+// 开放平台（按量付费）模型带 kimi- 前缀；Kimi Code 会员模型 ID 不带前缀。
+const kimiPaygModels = ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3']
+const kimiCodingModels = [
+  'k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k',
+  'kimi-for-coding', 'kimi-for-coding-highspeed'
 ]
+const moonshotModels = [...kimiPaygModels, ...kimiCodingModels]
 
 // 字节跳动 豆包
 const doubaoModels = [
@@ -503,8 +504,8 @@ export const commonErrorCodes = [
 // 辅助函数
 // =====================
 
-// 按平台获取模型
-export function getModelsByPlatform(platform: string): string[] {
+// 按平台获取模型；accountMode 只对 Kimi 生效，未给出时返回两种接入模式的并集
+export function getModelsByPlatform(platform: string, accountMode?: string): string[] {
   switch (platform) {
     case 'openai': return openaiModels
     case 'anthropic':
@@ -521,7 +522,10 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'cohere': return cohereModels
     case 'yi': return yiModels
     case 'moonshot':
-    case 'kimi': return moonshotModels
+    case 'kimi':
+      if (accountMode === 'coding') return kimiCodingModels
+      if (accountMode === 'payg') return kimiPaygModels
+      return moonshotModels
     case 'opencode_go': return [
       'grok-4.7', 'grok-4.6', 'gpt-5.6-luna',
       'glm-5.3-flash', 'glm-5.3', 'glm-5.2', 'glm-5.1',

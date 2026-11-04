@@ -185,6 +185,17 @@ func TestDefaultModelIDsForAnthropicExcludeAntigravityGemini(t *testing.T) {
 	require.Contains(t, antigravityIDs, "gemini-2.5-flash")
 }
 
+// Scenario: a Kimi group without accounts lists Kimi models from both access modes, not Claude.
+func TestDefaultModelIDsForKimiListKimiModels(t *testing.T) {
+	ids := defaultModelIDsForPlatform(service.PlatformKimi)
+	require.Equal(t, service.ProviderDefaultModelIDs(service.PlatformKimi), ids)
+	require.Equal(t, "kimi-k3.1-pro", ids[0], "default access mode comes first")
+	require.Contains(t, ids, "k3.1-pro")
+	for _, id := range ids {
+		require.False(t, strings.HasPrefix(id, "claude-"), id)
+	}
+}
+
 // Scenario: non-OpenAI groups return a Codex manifest instead of a standard model list.
 func TestGatewayCodexModels_NonOpenAIGroupsUseMappedModels(t *testing.T) {
 	tests := []struct {
@@ -996,14 +1007,15 @@ func TestGatewayModels_CompositeUnmappedCNAccountsContributeNoDefaults(t *testin
 	require.NotContains(t, ids, "claude-sonnet-4-6")
 }
 
-// 独立 CN 分组沿用 default 分支的 Claude 默认列表（Claude Code 客户端请求的
-// 就是这些模型名并经账号 model_mapping 转换），composite 支持不得改变该回退。
+// 没有内置模型列表的独立 CN 分组沿用 default 分支的 Claude 默认列表（Claude Code
+// 客户端请求的就是这些模型名并经账号 model_mapping 转换），composite 支持不得改变该回退。
+// Kimi 有内置列表，见 TestDefaultModelIDsForKimiListKimiModels。
 func TestDefaultModelIDsForPlatform_CNProvidersKeepClaudeDefaults(t *testing.T) {
 	want := make([]string, 0, len(claude.DefaultModels))
 	for _, model := range claude.DefaultModels {
 		want = append(want, model.ID)
 	}
-	for _, platform := range []string{service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax} {
+	for _, platform := range []string{service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax} {
 		require.Equal(t, want, defaultModelIDsForPlatform(platform), "platform=%s", platform)
 	}
 }

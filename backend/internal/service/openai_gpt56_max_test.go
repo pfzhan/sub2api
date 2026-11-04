@@ -383,3 +383,9 @@ func TestOpenAIGatewayServiceForwardAPIKeyRemoteCompactV2PreservesResponsesWire(
 	require.NotNil(t, result.ReasoningEffort)
 	require.Equal(t, "max", *result.ReasoningEffort)
 }
+
+func TestNormalizeOpenAIReasoningEffortForModel_KimiCodeBareIDsKeepMax(t *testing.T) {
+	for _, model := range []string{"k3", "k3-256k", "k3.1-pro", "k3.1-pro-highspeed"} {
+		require.Equal(t, "max", normalizeOpenAIReasoningEffortForModel("max", model), model)
+	}
+}

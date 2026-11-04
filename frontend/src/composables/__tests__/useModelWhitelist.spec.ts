@@ -36,6 +36,18 @@ describe('useModelWhitelist', () => {
     }
   })
 
+  it('kimi 按接入模式返回官方模型 ID', () => {
+    const payg = getModelsByPlatform('kimi', 'payg')
+    const coding = getModelsByPlatform('kimi', 'coding')
+    expect(payg).toEqual(['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3'])
+    expect(coding).toEqual([
+      'k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k',
+      'kimi-for-coding', 'kimi-for-coding-highspeed'
+    ])
+    expect(getModelsByPlatform('kimi')).toEqual([...payg, ...coding])
+    expect(getModelsByPlatform('kimi')).not.toContain('moonshot-v1-8k')
+  })
+
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
     const models = getModelsByPlatform('openai')
 

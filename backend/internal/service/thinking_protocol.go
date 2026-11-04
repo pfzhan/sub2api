@@ -40,7 +40,7 @@ const (
 //   - anthropic-strict: claude-* / opus-* / sonnet-* / haiku-*
 //   - passback-required: deepseek-* / kimi-* / moonshot-* / glm-* /
 //     minimax-* / minimax-m* / (qwen-|qwen2-|qwen3-|qwen4-)*-thinking /
-//     Kimi Code bare aliases k3 / k3-256k（精确匹配，避免宽泛 k3 前缀）
+//     Kimi Code bare aliases k3 / k3-256k / k3.1-pro / k3.1-pro-highspeed（精确匹配，避免宽泛 k3 前缀）
 //   - unknown: 其他模型（保守不剥离）
 //
 // 已知局限：前缀贪婪匹配（如 `claudette-`、`claude-foreign-relay-` 也会被分类为
@@ -57,7 +57,7 @@ func ResolveThinkingProtocol(modelID string) ThinkingProtocol {
 	id := strings.ToLower(modelID)
 
 	// Passback-required 优先匹配（特定厂商前缀），避免误判 claude-* 时也命中。
-	// kimi-k3* 已由 kimi- 前缀覆盖；Kimi Code endpoint 的 bare model ID（k3 / k3-256k）
+	// kimi-k3* 已由 kimi- 前缀覆盖；Kimi Code endpoint 的 bare model ID（k3 / k3-256k / k3.1-pro*）
 	// 无厂商前缀，仅精确匹配，避免 "foo-k3" 等未知型号被宽泛前缀误判。
 	switch {
 	case strings.HasPrefix(id, "deepseek-"),
@@ -65,7 +65,9 @@ func ResolveThinkingProtocol(modelID string) ThinkingProtocol {
 		strings.HasPrefix(id, "moonshot-"),
 		strings.HasPrefix(id, "glm-"),
 		id == "k3",
-		id == "k3-256k":
+		id == "k3-256k",
+		id == "k3.1-pro",
+		id == "k3.1-pro-highspeed":
 		return ThinkingProtocolPassbackRequired
 	}
 	// MiniMax M 系列：走 https://api.minimax.io/anthropic 端点，

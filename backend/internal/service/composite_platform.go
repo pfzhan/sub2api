@@ -146,6 +146,8 @@ func DetectModelPlatform(model string) (string, bool) {
 		return PlatformGrok, true
 	case normalized == "k3",
 		normalized == "k3-256k",
+		normalized == "k3.1-pro",
+		normalized == "k3.1-pro-highspeed",
 		strings.HasPrefix(normalized, "kimi-"),
 		strings.HasPrefix(normalized, "moonshot-"):
 		return PlatformKimi, true

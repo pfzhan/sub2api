@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
@@ -206,14 +207,25 @@ func TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMapping
 	require.Contains(t, candidates, "gemini-2.5-flash")
 }
 
-// 独立 CN 分组的模型列表候选沿用 default 分支的 Claude 默认列表；
+// 没有内置模型列表的独立 CN 分组，模型列表候选沿用 default 分支的 Claude 默认列表；
 // composite 支持不得改变独立分组的候选语义。
 func TestAdminService_CNProviderModelsListCandidatesKeepClaudeDefaults(t *testing.T) {
 	want := make([]string, 0, len(claude.DefaultModels))
 	for _, model := range claude.DefaultModels {
 		want = append(want, model.ID)
 	}
-	for _, platform := range []string{PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax} {
+	for _, platform := range []string{PlatformZhipu, PlatformDeepseek, PlatformMiniMax} {
 		require.Equal(t, want, defaultModelsListCandidateIDs(platform), "platform=%s", platform)
+	}
+}
+
+// Kimi 分组的模型列表候选是两种接入模式的官方模型，不含 Claude。
+func TestAdminService_KimiModelsListCandidatesUseKimiModels(t *testing.T) {
+	ids := defaultModelsListCandidateIDs(PlatformKimi)
+	require.Equal(t, ProviderDefaultModelIDs(PlatformKimi), ids)
+	require.Contains(t, ids, "kimi-k3.1-pro")
+	require.Contains(t, ids, "k3.1-pro")
+	for _, id := range ids {
+		require.False(t, strings.HasPrefix(id, "claude-"), id)
 	}
 }

@@ -49,8 +49,10 @@ func TestIsModelSupported_OpenAIOAuthEmptyMapping_RejectsForeignModels(t *testin
 		"deepseek-chat",
 		"glm-4.7",
 		"kimi-k2",
-		"k3",          // Kimi Code bare ID（无厂商前缀，需精确拒绝）
-		"k3-256k",     // Kimi Code bare ID
+		"k3",       // Kimi Code bare ID（无厂商前缀，需精确拒绝）
+		"k3-256k",  // Kimi Code bare ID
+		"k3.1-pro", // Kimi Code bare ID
+		"k3.1-pro-highspeed",
 		"provider/k3", // vendor/model 取 last segment 后仍为 k3
 		"moonshot-v1-128k",
 		"gemini-3.0-pro",

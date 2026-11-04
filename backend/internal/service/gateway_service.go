@@ -1455,6 +1455,13 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		}
 
 		mapping := acc.GetModelMapping()
+		// 未配置映射的多协议供应商账号按接入模式列出官方模型，不回落 Claude 默认列表。
+		if len(mapping) == 0 && (platform == "" || acc.Platform == platform) {
+			for _, model := range acc.providerDefaultModels() {
+				modelSet[model] = struct{}{}
+				hasAnyMapping = true
+			}
+		}
 		for model := range mapping {
 			// Accounts pulled in through mixed scheduling only contribute the
 			// models that belong to the listing platform (e.g. an antigravity

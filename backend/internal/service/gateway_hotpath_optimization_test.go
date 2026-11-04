@@ -953,3 +953,67 @@ func TestSelectAccountWithLoadAwareness_StickyReadReuse(t *testing.T) {
 		require.Equal(t, int64(1), cache.getCalls.Load())
 	})
 }
+
+func TestGetAvailableModels_UnmappedKimiAccountsListModeDefaults(t *testing.T) {
+	groupID := int64(11)
+	paygModels := []string{"kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"}
+	codingModels := []string{"k3", "k3-256k", "k3.1-pro", "k3.1-pro-highspeed", "kimi-for-coding", "kimi-for-coding-highspeed"}
+
+	tests := []struct {
+		name     string
+		accounts []Account
+		want     []string
+	}{
+		{
+			name:     "payg account without mapping",
+			accounts: []Account{{ID: 1, Platform: PlatformKimi, Credentials: map[string]any{"account_mode": AccountModePayG}}},
+			want:     paygModels,
+		},
+		{
+			name:     "missing account_mode uses payg",
+			accounts: []Account{{ID: 2, Platform: PlatformKimi, Credentials: map[string]any{}}},
+			want:     paygModels,
+		},
+		{
+			name:     "coding account without mapping",
+			accounts: []Account{{ID: 3, Platform: PlatformKimi, Credentials: map[string]any{"account_mode": AccountModeCoding}}},
+			want:     codingModels,
+		},
+		{
+			name: "mapped account keeps its whitelist alongside unmapped defaults",
+			accounts: []Account{
+				{ID: 4, Platform: PlatformKimi, Credentials: map[string]any{
+					"account_mode":  AccountModePayG,
+					"model_mapping": map[string]any{"kimi-k2.6": "kimi-k2.6"},
+				}},
+				{ID: 5, Platform: PlatformKimi, Credentials: map[string]any{"account_mode": AccountModeCoding}},
+			},
+			want: dedupeAndSortModelIDs(append([]string{"kimi-k2.6"}, codingModels...)),
+		},
+		{
+			name: "mapped account lists only its mapping",
+			accounts: []Account{{ID: 6, Platform: PlatformKimi, Credentials: map[string]any{
+				"account_mode":  AccountModeCoding,
+				"model_mapping": map[string]any{"k3": "k3"},
+			}}},
+			want: []string{"k3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{groupID: tt.accounts}}
+			svc := &GatewayService{accountRepo: repo}
+			require.Equal(t, tt.want, svc.GetAvailableModels(context.Background(), &groupID, PlatformKimi))
+		})
+	}
+}
+
+func TestGetAvailableModels_UnmappedZhipuAccountKeepsNilFallback(t *testing.T) {
+	groupID := int64(12)
+	repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{
+		groupID: {{ID: 1, Platform: PlatformZhipu, Credentials: map[string]any{"account_mode": AccountModeCoding}}},
+	}}
+	svc := &GatewayService{accountRepo: repo}
+	require.Nil(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformZhipu))
+}
