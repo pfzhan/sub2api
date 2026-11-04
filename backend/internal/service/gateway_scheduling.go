@@ -735,7 +735,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 
-		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
+		// 分层过滤选择：优先级 →（可选）最早重置 →（可选）前缀亲和 → 负载率 → LRU
+		// 前缀 key 只在这里按需计算。Gemini 按 OAuth 优先选号，不走前缀亲和。
+		var prefixKey string
+		if !preferOAuth {
+			prefixKey = prefixAffinityKeyFromContext(ctx)
+		}
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
@@ -743,10 +748,16 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			if cfg.PreferSoonestReset {
 				candidates = filterBySoonestReset(candidates)
 			}
-			// 3. 取负载率最低的集合
-			candidates = filterByMinLoadRate(candidates)
-			// 4. LRU 选择最久未用的账号
-			selected := selectByLRU(candidates, preferOAuth)
+			// 3. （可选）前缀亲和：相同共享前缀的会话集中到同一账号，见 gateway_prefix_affinity.go
+			var selected *accountWithLoad
+			if prefixKey != "" {
+				selected = selectByPrefixAffinity(candidates, derefGroupID(groupID), prefixKey, cfg.PrefixAffinityMaxLoadRate)
+			}
+			if selected == nil {
+				// 4. 取负载率最低的集合，LRU 选择最久未用的账号
+				candidates = filterByMinLoadRate(candidates)
+				selected = selectByLRU(candidates, preferOAuth)
+			}
 			if selected == nil {
 				break
 			}

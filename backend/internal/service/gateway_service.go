@@ -923,18 +923,11 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		)
 	}
 
-	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
-	cacheableContent := s.extractCacheableContent(parsed)
-	if cacheableContent != "" {
-		hash := s.hashContent(cacheableContent)
-		slog.Info("sticky.hash_source",
-			"source", "cacheable_content",
-			"hash", hash,
-		)
-		return hash
-	}
-
-	// 3. 最后 fallback: 使用 session上下文 + system + 所有消息的完整摘要串
+	// 2. 会话锚点：请求上下文区分因子 + system + 首条 user 消息
+	//
+	// 对话在尾部追加 messages 时三者都不变，hash 跨轮稳定，粘性绑定随 Redis TTL 保持，
+	// 会话一直留在同一账号上，上游 prompt 缓存得以复用。不能用缓存断点所在的内容或全部
+	// messages：客户端每轮把断点挪到最新消息上，二者都会逐轮变化。
 	var combined strings.Builder
 	// 混入请求上下文区分因子，避免不同用户相同消息产生相同 hash
 	if parsed.SessionContext != nil {
@@ -945,18 +938,18 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		_, _ = combined.WriteString(strconv.FormatInt(parsed.SessionContext.APIKeyID, 10))
 		_, _ = combined.WriteString("|")
 	}
-	if systemText := extractTextFromSystemRaw(parsed.SystemRaw()); systemText != "" {
+	if systemText := extractSessionAnchorSystemText(parsed.SystemRaw()); systemText != "" {
 		_, _ = combined.WriteString(systemText)
 	}
 	contentStart := combined.Len()
-	appendMessageTextsFromRaw(&combined, parsed.MessagesRaw())
+	appendFirstUserMessageFromRaw(&combined, parsed.MessagesRaw())
 	if combined.Len() == contentStart {
 		appendResponsesSessionAnchorFromRaw(&combined, parsed.InputRaw())
 	}
 	if combined.Len() > 0 {
 		hash := s.hashContent(combined.String())
 		slog.Info("sticky.hash_source",
-			"source", "message_content_fallback",
+			"source", "session_anchor",
 			"hash", hash,
 			"content_len", combined.Len(),
 		)
@@ -1058,18 +1051,6 @@ func (s *GatewayService) SaveAnthropicSession(_ context.Context, groupID int64, 
 	return nil
 }
 
-func (s *GatewayService) extractCacheableContent(parsed *ParsedRequest) string {
-	if parsed == nil {
-		return ""
-	}
-
-	systemText := extractCacheableTextFromSystemRaw(parsed.SystemRaw())
-	if messageText := extractCacheableTextFromMessagesRaw(parsed.MessagesRaw()); messageText != "" {
-		return messageText
-	}
-	return systemText
-}
-
 func parseRawJSONView(raw []byte) gjson.Result {
 	if len(raw) == 0 {
 		return gjson.Result{}
@@ -1078,7 +1059,9 @@ func parseRawJSONView(raw []byte) gjson.Result {
 	return gjson.Parse(*(*string)(unsafe.Pointer(&raw)))
 }
 
-func extractTextFromSystemRaw(raw []byte) string {
+// extractSessionAnchorSystemText 返回 system 的文本，跳过 Claude Code 的计费归属块：
+// 它的 cch 等字段可能逐请求变化，计入后会话锚点就不再稳定。
+func extractSessionAnchorSystemText(raw []byte) string {
 	system := parseRawJSONView(raw)
 	switch system.Type {
 	case gjson.String:
@@ -1089,7 +1072,7 @@ func extractTextFromSystemRaw(raw []byte) string {
 		}
 		var builder strings.Builder
 		system.ForEach(func(_, part gjson.Result) bool {
-			if text := part.Get("text").String(); text != "" {
+			if text := part.Get("text").String(); text != "" && !strings.HasPrefix(text, claudeCodeBillingHeaderPrefix) {
 				_, _ = builder.WriteString(text)
 			}
 			return true
@@ -1121,7 +1104,9 @@ func extractTextFromContentRaw(content gjson.Result) string {
 	return ""
 }
 
-func appendMessageTextsFromRaw(builder *strings.Builder, raw []byte) {
+// appendFirstUserMessageFromRaw 写入第一条 user 消息（Gemini contents 缺省 role 时
+// 视为 user）的文本；没有文本时（如只有图片）写入去掉 cache_control 的规范化 JSON。
+func appendFirstUserMessageFromRaw(builder *strings.Builder, raw []byte) {
 	if builder == nil || len(raw) == 0 {
 		return
 	}
@@ -1130,20 +1115,26 @@ func appendMessageTextsFromRaw(builder *strings.Builder, raw []byte) {
 		return
 	}
 	messages.ForEach(func(_, msg gjson.Result) bool {
-		if content := msg.Get("content"); content.Exists() {
-			_, _ = builder.WriteString(extractTextFromContentRaw(content))
+		if role := msg.Get("role").String(); role != "user" && role != "" {
 			return true
 		}
-		parts := msg.Get("parts")
-		if parts.IsArray() {
-			parts.ForEach(func(_, part gjson.Result) bool {
-				if text := part.Get("text").String(); text != "" {
-					_, _ = builder.WriteString(text)
-				}
+		body := msg.Get("content")
+		var text string
+		if body.Exists() {
+			text = extractTextFromContentRaw(body)
+		} else if body = msg.Get("parts"); body.IsArray() {
+			var parts strings.Builder
+			body.ForEach(func(_, part gjson.Result) bool {
+				_, _ = parts.WriteString(part.Get("text").String())
 				return true
 			})
+			text = parts.String()
 		}
-		return true
+		if text == "" && body.Exists() {
+			text = string(canonicalAnthropicDigestJSON([]byte(body.Raw)))
+		}
+		_, _ = builder.WriteString(text)
+		return false
 	})
 }
 
@@ -1204,51 +1195,6 @@ func appendResponsesContentText(builder *strings.Builder, content gjson.Result) 
 		}
 		return true
 	})
-}
-
-func extractCacheableTextFromSystemRaw(raw []byte) string {
-	system := parseRawJSONView(raw)
-	if !system.IsArray() {
-		return ""
-	}
-	var builder strings.Builder
-	system.ForEach(func(_, part gjson.Result) bool {
-		if part.Get("cache_control.type").String() == "ephemeral" {
-			if text := part.Get("text").String(); text != "" {
-				_, _ = builder.WriteString(text)
-			}
-		}
-		return true
-	})
-	return builder.String()
-}
-
-func extractCacheableTextFromMessagesRaw(raw []byte) string {
-	messages := parseRawJSONView(raw)
-	if !messages.IsArray() {
-		return ""
-	}
-	var text string
-	messages.ForEach(func(_, msg gjson.Result) bool {
-		content := msg.Get("content")
-		if !content.IsArray() {
-			return true
-		}
-		found := false
-		content.ForEach(func(_, part gjson.Result) bool {
-			if part.Get("cache_control.type").String() == "ephemeral" {
-				found = true
-				return false
-			}
-			return true
-		})
-		if found {
-			text = extractTextFromContentRaw(content)
-			return false
-		}
-		return true
-	})
-	return text
 }
 
 func (s *GatewayService) hashContent(content string) string {

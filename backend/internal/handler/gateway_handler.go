@@ -320,6 +320,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	c.Request = c.Request.WithContext(h.gatewayService.WithSharedPrefixAffinity(c.Request.Context(), parsedReq, reqModel))
 
 	// 查询粘性会话绑定的账号 ID
 	var sessionBoundAccountID int64

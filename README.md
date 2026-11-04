@@ -228,6 +228,10 @@ underscores_in_headers on;
 
 Nginx drops headers containing underscores by default (e.g. `session_id`), which breaks sticky session routing in multi-account setups.
 
+### Prompt Cache Affinity
+
+Upstream prompt caches are per account, so spreading new sessions evenly across a group's accounts writes the same shared prefix (tools and the fixed system prompt) once per account. Set `gateway.scheduling.prefix_affinity_enabled: true` to send new sessions with the same shared prefix (model, tools and system up to the first cache breakpoint) to the same account; each group ranks its accounts independently. It moves on to the next account once that account's load rate reaches `prefix_affinity_max_load_rate` (default 80) or exceeds the group average by 25% plus one request. Existing sessions stay on their sticky account. Load rate only counts in-flight requests, so set the per-account session limit (Anthropic OAuth/Setup Token accounts) to cap how many idle sessions one account holds. Prefix affinity only applies to load-aware selection on `/v1/messages`; it has no effect for Gemini, with `load_batch_enabled: false`, when the group routes the requested model to specific accounts, or when the batch load lookup fails. Off by default.
+
 ---
 
 ## Deployment

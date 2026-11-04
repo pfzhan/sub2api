@@ -589,6 +589,23 @@ gateway:
     # 负载感知选择时优先用尽「会话窗口最早重置」的账号；false 保持
     # 原有「优先级 → 负载率 → LRU」行为（默认）。
     prefer_soonest_reset: false
+    # Route new sessions with the same shared prompt prefix (model + tools + system up to
+    # the first cache breakpoint) to the same account, so the upstream prompt cache for that
+    # prefix is written once instead of on every account. Existing sessions stay sticky.
+    # Each group ranks its accounts independently. The preferred account is skipped once its
+    # load rate exceeds the group average by 25% plus one request.
+    # Only applies to load-aware selection on /v1/messages; it has no effect for Gemini,
+    # with load_batch_enabled=false, when the group routes the requested model to specific
+    # accounts, or when the batch load lookup fails.
+    # 前缀亲和：相同共享前缀（模型 + tools + system 中第一个缓存断点及之前）的新会话
+    # 优先落到同一账号，共享前缀只在少数账号上写缓存；已有会话仍按粘性绑定。各分组独立
+    # 排序；首选账号负载率比分组平均高出 25% 加一个请求时顺延到下一个账号。
+    # 只作用于 /v1/messages 的负载感知选号，以下情况不生效：Gemini 平台、
+    # load_batch_enabled=false、分组为所请求模型配置了模型路由、批量读取负载失败。默认关闭。
+    prefix_affinity_enabled: false
+    # Skip the preferred account once its load rate reaches this percentage (1-100)
+    # 首选账号负载率达到该百分比时顺延到下一个账号（1-100）
+    prefix_affinity_max_load_rate: 80
     # Enable batch load calculation for scheduling
     # 启用调度批量负载计算
     load_batch_enabled: true

@@ -49,7 +49,8 @@ func BuildAnthropicDigestChain(parsed *ParsedRequest) string {
 	return strings.Join(parts, "-")
 }
 
-// canonicalAnthropicDigestJSON 保持 digest 对 JSON key 顺序和空白不敏感。
+// canonicalAnthropicDigestJSON 保持 digest 对 JSON key 顺序和空白不敏感，并去掉
+// cache_control：客户端会逐轮移动缓存断点，断点位置不应改变内容的 digest。
 func canonicalAnthropicDigestJSON(raw []byte) []byte {
 	if len(raw) == 0 {
 		return raw
@@ -58,11 +59,26 @@ func canonicalAnthropicDigestJSON(raw []byte) []byte {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return raw
 	}
+	stripAnthropicCacheControl(value)
 	canonical, err := json.Marshal(value)
 	if err != nil {
 		return raw
 	}
 	return canonical
+}
+
+func stripAnthropicCacheControl(value any) {
+	switch v := value.(type) {
+	case map[string]any:
+		delete(v, "cache_control")
+		for _, child := range v {
+			stripAnthropicCacheControl(child)
+		}
+	case []any:
+		for _, child := range v {
+			stripAnthropicCacheControl(child)
+		}
+	}
 }
 
 // rolePrefix 将 Anthropic 的 role 映射为单字符前缀

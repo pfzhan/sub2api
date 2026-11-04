@@ -201,14 +201,14 @@ func BenchmarkOpenAIResponses_LargeInputFunctionCallValidation(b *testing.B) {
 	}
 }
 
-// BenchmarkExtractCacheableContent_System 关注字符串拼接路径的性能。
-func BenchmarkExtractCacheableContent_System(b *testing.B) {
+// BenchmarkGenerateSessionHash_System 关注会话锚点字符串拼接路径的性能。
+func BenchmarkGenerateSessionHash_System(b *testing.B) {
 	svc := &GatewayService{}
 	req := buildSystemCacheableRequest(12)
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		benchmarkStringSink = svc.extractCacheableContent(req)
+		benchmarkStringSink = svc.GenerateSessionHash(req)
 	}
 }
 
