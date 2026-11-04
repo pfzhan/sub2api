@@ -368,6 +368,10 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {
 					h.handleCCFailoverExhausted(c, failoverErr, true)
+					// 不换账号，Forward 带回的已观测 usage 照常入账（#5148）
+					if result != nil {
+						submitForwardUsage(result)
+					}
 					return
 				}
 				action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)

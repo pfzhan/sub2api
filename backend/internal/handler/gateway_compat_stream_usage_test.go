@@ -110,7 +110,7 @@ func runCompatStreamUsageHandler(t *testing.T, endpoint, upstreamStream string, 
 	}
 
 	body := `{"model":"claude-sonnet-4.5","stream":true,"input":"hello"}`
-	if endpoint == "chat/completions" {
+	if endpoint == "chat/completions" || endpoint == "messages" {
 		body = `{"model":"claude-sonnet-4.5","stream":true,"messages":[{"role":"user","content":"hello"}]}`
 	}
 	c, _ := gin.CreateTestContext(run.rec)
@@ -120,9 +120,12 @@ func runCompatStreamUsageHandler(t *testing.T, endpoint, upstreamStream string, 
 	c.Set(string(middleware.ContextKeyAPIKey), apiKey)
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 9303})
 
-	if endpoint == "chat/completions" {
+	switch endpoint {
+	case "chat/completions":
 		h.ChatCompletions(c)
-	} else {
+	case "messages":
+		h.Messages(c)
+	default:
 		h.Responses(c)
 	}
 	return run
@@ -203,7 +206,7 @@ func TestGatewayCompatibilityHandlers_IdleBeforeAnyEventWritesStreamError(t *tes
 	}
 }
 
-func TestGatewayCompatibilityHandlers_UpstreamErrorEventAfterOutputIsNotBilled(t *testing.T) {
+func TestGatewayCompatibilityHandlers_UpstreamErrorEventAfterOutputBillsObservedUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstreamError := "event: error\n" + `data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}` + "\n\n"
 	for _, endpoint := range []string{"chat/completions", "responses"} {
@@ -222,8 +225,33 @@ func TestGatewayCompatibilityHandlers_UpstreamErrorEventAfterOutputIsNotBilled(t
 
 			run.billingRepo.mu.Lock()
 			defer run.billingRepo.mu.Unlock()
-			require.Empty(t, run.billingRepo.commands, "an upstream error event is not billed while the client is online")
-			require.Empty(t, run.usageRepo.created)
+			require.Len(t, run.billingRepo.commands, 1, "output reached the client, so observed usage is settled exactly once")
+			require.Equal(t, 12, run.billingRepo.commands[0].InputTokens)
+			require.Equal(t, 1, run.billingRepo.commands[0].OutputTokens)
+			require.Len(t, run.usageRepo.created, 1)
 		})
 	}
+}
+
+// /v1/messages 上游已输出内容后再发 error 帧：不换账号、不把账号当传输故障处理，
+// 客户端只收到一个错误帧，已观测的 usage 入账一次。
+func TestGatewayMessages_UpstreamErrorEventAfterOutputBillsWithoutFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamError := "event: error\n" + `data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}` + "\n\n"
+
+	run := runCompatStreamUsageHandler(t, "messages", compatStreamUsagePartialStream+upstreamError, true)
+
+	require.Equal(t, 1, run.upstream.calls)
+	out := run.rec.Body.String()
+	require.Contains(t, out, "partial")
+	require.Equal(t, 1, strings.Count(out, `"type":"error"`), "exactly one error frame reaches the client")
+	require.Greater(t, strings.Index(out, `"type":"error"`), strings.Index(out, "partial"), "the error frame follows the partial output")
+	require.NotContains(t, out, "No available accounts", "output already started, so the handler must not try another account")
+	require.NotContains(t, out, "message_stop")
+
+	run.billingRepo.mu.Lock()
+	defer run.billingRepo.mu.Unlock()
+	require.Len(t, run.billingRepo.commands, 1, "observed usage is settled exactly once")
+	require.Equal(t, 12, run.billingRepo.commands[0].InputTokens)
+	require.Len(t, run.usageRepo.created, 1)
 }

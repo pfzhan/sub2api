@@ -680,8 +680,9 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 // input/cache token 就已计量，直接丢弃会让请求完全漏记漏计费（issue #5148）。
 // 无已观测 usage 时返回 nil。
 //
-// 不变式：UpstreamFailoverError 必须保持 result=nil——failover 重试成功后按成功请求
-// 计费，若同时返回部分 usage 会造成双重计费，此处显式拦截兜底。
+// 不变式：会换账号重试的 UpstreamFailoverError 必须保持 result=nil——重试成功后按
+// 成功请求计费，若同时返回部分 usage 会造成双重计费，此处显式拦截兜底。已向客户端
+// 输出后的流内 error 事件不会换账号，Forward 用原始错误调用本函数带出 usage。
 func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time, err error) *ForwardResult {
 	if streamResult == nil || !streamResult.usage.hasObservedTokens() {
 		return nil
@@ -734,6 +735,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	// handler 等待并发槽时可能已向客户端写过 ping，判断本账号是否已有输出要与
+	// 进入本函数时的写入量比较，和 Forward / handler 的 writer size 口径一致。
+	writerSizeAtStart := w.Size()
 
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
@@ -1063,7 +1067,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。完整 ev.err
 				// 仅在下方 LegacyPrintf 内部日志中保留供运维诊断。
 				disconnectMsg := "upstream stream disconnected: " + sanitizeStreamError(ev.err)
-				if !c.Writer.Written() {
+				if w.Size() == writerSizeAtStart {
 					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (account=%d), failing over: %v", account.ID, ev.err)
 					body, _ := json.Marshal(map[string]any{
 						"type": "error",
@@ -1096,7 +1100,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					if clientDisconnected {
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
 					}
-					return nil, err
+					// 已观测的 usage 随错误一起带出，由调用方决定是否入账。
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, err
 				}
 
 				for _, block := range outputBlocks {

@@ -260,6 +260,36 @@ func TestHandleStreamingResponse_StreamReadErrorBeforeOutput_TriggersFailover(t 
 	require.NotContains(t, rec.Body.String(), "stream_read_error")
 }
 
+// handler 等待并发槽时已向客户端写过 ping，本账号尚未输出任何内容就发生读错误：
+// 仍属于"output 尚未开始"，必须包成 UpstreamFailoverError 交给 handler 换号，
+// 不能因为 c.Writer 已被 ping 写过就把错误直接发给客户端。
+func TestHandleStreamingResponse_StreamReadErrorAfterHandlerPing_TriggersFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newMinimalGatewayService()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	_, _ = c.Writer.WriteString("event: ping\ndata: {\"type\": \"ping\"}\n\n")
+	c.Writer.Flush()
+	pingOnly := rec.Body.String()
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       &streamReadCloser{err: io.ErrUnexpectedEOF},
+	}
+
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr, "a handler ping is not output from this account")
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, pingOnly, rec.Body.String(), "nothing is written to the client so the next account can continue the stream")
+}
+
 // 上游已经发送过事件（c.Writer 已写过字节）后再发生读错误：
 // SSE 协议无 resume，网关只能透传 stream_read_error 错误事件给客户端，不能 failover。
 func TestHandleStreamingResponse_StreamReadErrorAfterOutput_PassesThrough(t *testing.T) {
@@ -418,7 +448,8 @@ func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *t
 	_ = pr.Close()
 
 	require.Error(t, err)
-	require.Nil(t, result)
+	require.NotNil(t, result, "已观测的 usage 随错误带出")
+	require.False(t, result.usage.hasObservedTokens())
 
 	// typed error 必须可被 errors.As 匹配，RawData 必须保留上游 dataLine 原文
 	var sseErr *sseStreamErrorEventError

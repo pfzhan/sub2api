@@ -423,7 +423,8 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventEndsStreamWithoutWaiting(t *
 				} else {
 					var sseErr *sseStreamErrorEventError
 					require.ErrorAs(t, got.err, &sseErr)
-					require.Nil(t, got.result, "an upstream error event is not billed while the client is online")
+					require.NotNil(t, got.result, "after output reached the client the handler does not fail over; observed usage is billed")
+					require.Equal(t, 20, got.result.Usage.InputTokens)
 					require.Equal(t, 1, strings.Count(writer.Body.String(), compatStreamFailureMarkers[name]))
 					require.Contains(t, writer.Body.String(), "Overloaded")
 				}
@@ -456,7 +457,8 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventStopsReadingBufferedEvents(t
 
 			var sseErr *sseStreamErrorEventError
 			require.ErrorAs(t, err, &sseErr)
-			require.Nil(t, result)
+			require.NotNil(t, result)
+			require.Equal(t, 20, result.Usage.InputTokens)
 			body := rec.Body.String()
 			require.NotContains(t, body, "LEAKED")
 			require.NotContains(t, body, compatStreamTerminalMarkers[name])
@@ -542,7 +544,12 @@ func TestForwardAsCompatStreaming_UpstreamErrorEventFailsOver(t *testing.T) {
 				var failoverErr *UpstreamFailoverError
 				require.ErrorAs(t, err, &failoverErr)
 				require.Equal(t, tc.wantStatus, failoverErr.StatusCode)
-				require.Nil(t, result)
+				if tc.name == "after_output" {
+					require.NotNil(t, result, "observed usage is billed once output reached the client")
+					require.Equal(t, 20, result.Usage.InputTokens)
+				} else {
+					require.Nil(t, result)
+				}
 			})
 		}
 	}

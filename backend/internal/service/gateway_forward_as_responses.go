@@ -212,7 +212,13 @@ func (s *GatewayService) ForwardAsResponses(
 		var sseErr *sseStreamErrorEventError
 		switch {
 		case errors.As(handleErr, &sseErr):
-			return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, c.Writer.Size() != writerSizeBeforeStream)
+			outputStarted := c.Writer.Size() != writerSizeBeforeStream
+			failoverErr := s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, outputStarted)
+			// 已向客户端输出时 handler 不会换账号，已观测的 usage 照常入账（#5148）。
+			if outputStarted && result != nil {
+				return result, failoverErr
+			}
+			return nil, failoverErr
 		case errors.Is(handleErr, errAnthropicNativeStreamIdle) && s.rateLimitService != nil:
 			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 		}

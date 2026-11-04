@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -169,7 +170,9 @@ func TestHandleUpstreamTransportError_ClientCanceledNoFailover(t *testing.T) {
 	account := &Account{ID: 149, Name: "acc", Platform: PlatformAnthropic}
 
 	inErr := context.Canceled
-	err := s.handleUpstreamTransportError(context.Background(), c, account, inErr, OpsUpstreamErrorEvent{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := s.handleUpstreamTransportError(ctx, c, account, inErr, OpsUpstreamErrorEvent{})
 
 	var failoverErr *UpstreamFailoverError
 	if errors.As(err, &failoverErr) {
@@ -202,4 +205,82 @@ func TestHandleUpstreamTransportError_UpstreamDeadlineStillFailsOver(t *testing.
 	if repo.calls != 0 {
 		t.Fatalf("SetTempUnschedulable called %d times for upstream deadline, want 0", repo.calls)
 	}
+}
+
+// TestHandleUpstreamTransportError_CanceledWithLiveRequestContextFailsOver pins
+// that context.Canceled only means "client gone" when the request context is
+// itself canceled. With a live request context the cancellation came from the
+// upstream side (e.g. a transport-internal timer) and must fail over.
+func TestHandleUpstreamTransportError_CanceledWithLiveRequestContextFailsOver(t *testing.T) {
+	repo := &transportTempUnschedRepoStub{}
+	s := &GatewayService{accountRepo: repo}
+	c := newTransportErrorTestGin(t)
+	account := &Account{ID: 149, Name: "acc", Platform: PlatformAnthropic}
+
+	inErr := &url.Error{Op: "Post", URL: "https://upstream.example/v1/messages", Err: context.Canceled}
+	err := s.handleUpstreamTransportError(context.Background(), c, account, inErr, OpsUpstreamErrorEvent{})
+
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("canceled upstream with live request context must fail over, got %T: %v", err, err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatal("the returned error must not look like a client disconnect")
+	}
+	if repo.calls != 0 {
+		t.Fatalf("SetTempUnschedulable called %d times for a transient error, want 0", repo.calls)
+	}
+}
+
+func TestRecordCountTokensTransportError(t *testing.T) {
+	account := &Account{ID: 149, Name: "acc", Platform: PlatformAnthropic}
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dialErr := errors.New(`dial tcp 1.2.3.4:443: connect: connection refused`)
+
+	t.Run("persistent fault evicts", func(t *testing.T) {
+		repo := &transportTempUnschedRepoStub{}
+		s := &GatewayService{accountRepo: repo}
+		c := newTransportErrorTestGin(t)
+
+		s.recordCountTokensTransportError(context.Background(), c, account, dialErr, &OpsUpstreamErrorEvent{Passthrough: true})
+
+		if repo.calls != 1 {
+			t.Fatalf("SetTempUnschedulable called %d times, want 1", repo.calls)
+		}
+		if _, ok := c.Get(OpsUpstreamErrorsKey); !ok {
+			t.Fatal("transport failure must be recorded as an Ops upstream event")
+		}
+	})
+	t.Run("client disconnect records nothing", func(t *testing.T) {
+		repo := &transportTempUnschedRepoStub{}
+		s := &GatewayService{accountRepo: repo}
+		c := newTransportErrorTestGin(t)
+
+		s.recordCountTokensTransportError(canceledCtx, c, account, &url.Error{Op: "Post", URL: "https://upstream.example", Err: context.Canceled}, &OpsUpstreamErrorEvent{})
+
+		if repo.calls != 0 {
+			t.Fatalf("SetTempUnschedulable called %d times on client cancel, want 0", repo.calls)
+		}
+		if _, ok := c.Get(OpsUpstreamErrorsKey); ok {
+			t.Fatal("client disconnect is not an upstream fault")
+		}
+		if _, ok := c.Get(OpsUpstreamErrorMessageKey); ok {
+			t.Fatal("client disconnect must not set the upstream error message")
+		}
+	})
+	t.Run("transient fault does not evict", func(t *testing.T) {
+		repo := &transportTempUnschedRepoStub{}
+		s := &GatewayService{accountRepo: repo}
+		c := newTransportErrorTestGin(t)
+
+		s.recordCountTokensTransportError(context.Background(), c, account, errors.New("read: connection reset by peer"), nil)
+
+		if repo.calls != 0 {
+			t.Fatalf("SetTempUnschedulable called %d times for a transient error, want 0", repo.calls)
+		}
+		if _, ok := c.Get(OpsUpstreamErrorMessageKey); !ok {
+			t.Fatal("transport failure must set the upstream error message")
+		}
+	})
 }

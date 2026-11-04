@@ -34,8 +34,10 @@ var gatewayTransportFailoverBody = []byte(`{"type":"error","error":{"type":"upst
 //     DNS/routing) temporarily unschedules the account and logs a stable warn
 //     event that alert rules can key on;
 //  3. returns an error that is *UpstreamFailoverError (so the handler fails
-//     over to a healthy account) for all non-canceled errors, or the original
-//     error for context.Canceled (client gone — no failover, no eviction).
+//     over to a healthy account), or the original error when the request
+//     context itself is canceled or past its deadline (client gone — no
+//     failover, no eviction). context.Canceled with a live request context
+//     is an upstream-side fault and fails over.
 //
 // It deliberately does NOT write to the response: the handler owns the
 // response (failover, or a protocol-correct error once failover is exhausted).
@@ -54,9 +56,11 @@ func (s *GatewayService) handleUpstreamTransportError(ctx context.Context, c *gi
 	event.Message = safeErr
 	appendOpsUpstreamError(c, event)
 
-	// Client disconnected: do NOT fail over to another account and do NOT
-	// evict this one — the upstream never had a chance to exhibit a fault.
-	if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+	// The request's own deadline expired: do NOT fail over and do NOT evict.
+	// A client disconnect already returned above via isClientCanceledTransportError.
+	// context.Canceled while the request context is still alive came from the
+	// upstream side, so it fails over like any other transport error.
+	if errors.Is(err, context.DeadlineExceeded) && ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return err
 	}
 
@@ -70,6 +74,34 @@ func (s *GatewayService) handleUpstreamTransportError(ctx context.Context, c *gi
 	return &UpstreamFailoverError{
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: gatewayTransportFailoverBody,
+	}
+}
+
+// recordCountTokensTransportError applies the handleUpstreamTransportError
+// classification to a count_tokens transport failure. count_tokens has no
+// failover loop, so the caller still writes the client response; this only
+// keeps the side effects consistent with Messages: a client disconnect records
+// no Ops upstream error and evicts nothing, any other failure is recorded, and
+// durable faults temporarily unschedule the account. event may be nil when the
+// path records no Ops event (only the request-level upstream error message).
+func (s *GatewayService) recordCountTokensTransportError(ctx context.Context, c *gin.Context, account *Account, err error, event *OpsUpstreamErrorEvent) {
+	if isClientCanceledTransportError(ctx, err) {
+		return
+	}
+	safeErr := sanitizeUpstreamErrorMessage(err.Error())
+	setOpsUpstreamError(c, 0, safeErr, "")
+	if event != nil {
+		event.ProxyID, event.ProxyName = opsUpstreamProxyAttribution(account)
+		event.Platform = account.Platform
+		event.AccountID = account.ID
+		event.AccountName = account.Name
+		event.UpstreamStatusCode = 0
+		event.Kind = "request_error"
+		event.Message = safeErr
+		appendOpsUpstreamError(c, *event)
+	}
+	if classifyUpstreamTransportError(err).Persistent {
+		s.tempUnscheduleTransportError(ctx, account, safeErr)
 	}
 }
 

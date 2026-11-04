@@ -1543,7 +1543,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingReadError(t *testing
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body: &streamReadCloser{
-			err: io.ErrUnexpectedEOF,
+			// 已向客户端输出后才读错误：无法换号，按流中断返回。
+			payload: []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n"),
+			err:     io.ErrUnexpectedEOF,
 		},
 	}
 
@@ -1725,7 +1727,10 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ContextCanceledSkipsOllamaAct
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
-	_, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, ollama, []byte(`{"model":"x"}`), "x", "x", false, time.Now())
+	// 客户端断开表现为请求 context 已取消；context 仍存活时的 Canceled 属于上游故障。
+	clientCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := svc.forwardAnthropicAPIKeyPassthrough(clientCtx, c, ollama, []byte(`{"model":"x"}`), "x", "x", false, time.Now())
 
 	require.Error(t, err)
 	_, ok := deferred.lastUsedUpdates.Load(int64(603))

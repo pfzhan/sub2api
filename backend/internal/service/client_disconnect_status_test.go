@@ -57,7 +57,14 @@ func TestTransportErrorHandlers_ClientDisconnectRecordsNoOpsEvent(t *testing.T) 
 
 			err := h.handle(context.Background(), c)
 
-			require.ErrorIs(t, err, context.Canceled)
+			if h.name == "anthropic" {
+				// 请求 context 未取消时 Canceled 来自上游一侧，按传输错误换号。
+				var failoverErr *UpstreamFailoverError
+				require.ErrorAs(t, err, &failoverErr)
+				require.NotErrorIs(t, err, context.Canceled)
+			} else {
+				require.ErrorIs(t, err, context.Canceled)
+			}
 			raw, recorded := c.Get(OpsUpstreamErrorsKey)
 			require.True(t, recorded)
 			require.Len(t, raw.([]*OpsUpstreamErrorEvent), 1)

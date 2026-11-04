@@ -256,6 +256,11 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	if input.RequestStream {
 		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel)
 		if err != nil {
+			// 只在尚未向客户端输出时才会拿到 event:error，按 /v1/messages 同一规则切号。
+			var sseErr *sseStreamErrorEventError
+			if errors.As(err, &sseErr) {
+				return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, input.RequestModel, false)
+			}
 			// 流中断时保留已观测到的 usage 与错误一起返回，避免上游已计量的请求
 			// 完全漏记漏计费（issue #5148）。
 			if partial := partialStreamUsageResult(c, resp, streamResult, input.OriginalModel, input.RequestModel, input.StartTime, err); partial != nil {
@@ -409,11 +414,17 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	// 与 /v1/messages 一致：尚未向客户端写出任何字节时，上游读错误和 event:error 帧
+	// 都交给 handler 走 failover，而不是把错误透传给客户端。
+	writerSizeAtStart := w.Size()
 
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
 	clientDisconnected := false
 	sawTerminalEvent := false
+	// 输出开始前遇到 event:error 时暂存该事件，读完 data 行后作为 failover 错误返回。
+	capturingErrorEvent := false
+	errorEventData := ""
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -509,6 +520,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				queueBudget.release(len(ev.line))
 			}
 			if !ok {
+				if capturingErrorEvent {
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, &sseStreamErrorEventError{RawData: errorEventData}
+				}
 				if !clientDisconnected {
 					// 兜底补刷，确保最后一个未以空行结尾的事件也能及时送达客户端。
 					flusher.Flush()
@@ -538,10 +552,39 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] SSE line too long: account=%d max_size=%d error=%v", account.ID, maxLineSize, ev.err)
 					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
 				}
+				if w.Size() == writerSizeAtStart {
+					// 面向客户端的消息用 sanitizeStreamError 去掉网络地址，完整错误只进内部日志。
+					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Upstream stream read error before any client output (account=%d), failing over: %v", account.ID, ev.err)
+					body, _ := json.Marshal(map[string]any{
+						"type": "error",
+						"error": map[string]string{
+							"type":    "upstream_disconnected",
+							"message": "upstream stream disconnected: " + sanitizeStreamError(ev.err),
+						},
+					})
+					return nil, &UpstreamFailoverError{
+						StatusCode:             http.StatusBadGateway,
+						ResponseBody:           body,
+						RetryableOnSameAccount: true,
+					}
+				}
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 
 			line := ev.line
+			if capturingErrorEvent {
+				if data, ok := extractAnthropicSSEDataLine(line); ok && errorEventData == "" {
+					errorEventData = strings.TrimSpace(data)
+				}
+				if strings.TrimSpace(line) == "" {
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, &sseStreamErrorEventError{RawData: errorEventData}
+				}
+				continue
+			}
+			if !clientDisconnected && w.Size() == writerSizeAtStart && isAnthropicSSEErrorEventLine(line) {
+				capturingErrorEvent = true
+				continue
+			}
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
 				observer.ObserveAnthropic([]byte(trimmed))
@@ -615,6 +658,12 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			resetKeepaliveTimer()
 		}
 	}
+}
+
+// isAnthropicSSEErrorEventLine 判断是否为 event:error 行，判定方式与 /v1/messages 的 processSSEEvent 相同。
+func isAnthropicSSEErrorEventLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "event:") && strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")) == "error"
 }
 
 func extractAnthropicSSEDataLine(line string) (string, bool) {

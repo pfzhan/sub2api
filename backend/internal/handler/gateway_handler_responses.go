@@ -351,6 +351,10 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				// Can't failover if streaming content already sent
 				if c.Writer.Size() != writerSizeBeforeForward {
 					h.handleResponsesFailoverExhausted(c, failoverErr, true)
+					// 不换账号，Forward 带回的已观测 usage 照常入账（#5148）
+					if result != nil {
+						submitForwardUsage(result)
+					}
 					return
 				}
 				action := fs.HandleFailoverError(requestCtx, h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)

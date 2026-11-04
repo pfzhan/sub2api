@@ -147,6 +147,11 @@ func (s *GatewayService) forwardBedrock(
 	if reqStream {
 		streamResult, err := s.handleBedrockStreamingResponse(ctx, resp, c, account, startTime, reqModel)
 		if err != nil {
+			// 与 /v1/messages 一致：读错误、数据间隔超时时已观测的 usage 随错误带回入账。
+			if partial := partialStreamUsageResult(c, resp, streamResult, reqModel, mappedModel, startTime, err); partial != nil {
+				partial.RequestID = resp.Header.Get("x-amzn-requestid")
+				return partial, err
+			}
 			return nil, err
 		}
 		usage = streamResult.usage
