@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"golang.org/x/net/http2"
 )
 
 func TestHTTPUpstreamDoCanDisableRedirectsPerRequest(t *testing.T) {
@@ -99,14 +101,144 @@ func TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredSOCKSProxy(t *testing.T) {
 func TestTLSFingerprintHTTPSProxyFallsBackWithoutBypassingProxy(t *testing.T) {
 	proxyURL, err := url.Parse("https://user:pass@proxy.example:8443")
 	require.NoError(t, err)
-	transport, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, proxyURL, &tlsfingerprint.Profile{Name: "test"})
+	rt, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, proxyURL, &tlsfingerprint.Profile{Name: "test"})
 	require.NoError(t, err)
+	transport, ok := rt.(*http.Transport)
+	require.True(t, ok, "https proxy fallback should keep net/http transport")
 	require.NotNil(t, transport.Proxy)
 	require.Nil(t, transport.DialTLSContext)
 	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "upstream.example"}}
 	resolved, err := transport.Proxy(req)
 	require.NoError(t, err)
 	require.Equal(t, "https://user:pass@proxy.example:8443", resolved.String())
+}
+
+func TestTLSFingerprintDefaultProfileUsesH2WithH1FallbackAndHeaderTimeout(t *testing.T) {
+	rt, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{responseHeaderTimeout: 7 * time.Second}, nil, &tlsfingerprint.Profile{Name: "test"})
+	require.NoError(t, err)
+	transport, ok := rt.(*tlsFingerprintALPNTransport)
+	require.True(t, ok, "default ALPN should use dual-stack h2 then h1 fallback")
+	require.NotNil(t, transport.h2)
+	require.NotNil(t, transport.h1)
+	require.Equal(t, 7*time.Second, transport.headerTimeout)
+	h1, ok := transport.h1.(*http.Transport)
+	require.True(t, ok)
+	require.Equal(t, 7*time.Second, h1.ResponseHeaderTimeout)
+	_, ok = transport.h2.(*http2.Transport)
+	require.True(t, ok)
+}
+
+func TestIsTLSFingerprintALPNMismatch(t *testing.T) {
+	require.True(t, isTLSFingerprintALPNMismatch(errTLSFingerprintWantH2))
+	require.True(t, isTLSFingerprintALPNMismatch(fmt.Errorf("%w: negotiated %q", errTLSFingerprintWantH2, "http/1.1")))
+	require.True(t, isTLSFingerprintALPNMismatch(errors.New("tls: no_application_protocol")))
+	require.True(t, isTLSFingerprintALPNMismatch(errors.New("TLS handshake failed: remote error: tls: no application protocol")))
+	require.False(t, isTLSFingerprintALPNMismatch(errors.New("connection refused")))
+	require.False(t, isTLSFingerprintALPNMismatch(nil))
+}
+
+type hangRoundTripper struct{}
+
+func (hangRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+func TestRoundTripWithHeaderTimeoutDoesNotReturnContextCanceled(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	_, err := roundTripWithHeaderTimeout(hangRoundTripper{}, req, 20*time.Millisecond)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errTLSFingerprintHeaderTimeout)
+	require.False(t, errors.Is(err, context.Canceled), "gateway treats context.Canceled as client disconnect")
+	var netErr net.Error
+	require.ErrorAs(t, err, &netErr)
+	require.True(t, netErr.Timeout(), "must match http.Transport ResponseHeaderTimeout")
+	require.True(t, isUpstreamTimeoutError(err))
+}
+
+func TestRoundTripWithHeaderTimeoutKeepsClientCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil).WithContext(ctx)
+	time.AfterFunc(10*time.Millisecond, cancel)
+	_, err := roundTripWithHeaderTimeout(hangRoundTripper{}, req, time.Second)
+	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, errors.Is(err, errTLSFingerprintHeaderTimeout))
+}
+
+type countingRoundTripper struct {
+	calls atomic.Int64
+	err   error
+}
+
+func (c *countingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req, Header: make(http.Header)}, nil
+}
+
+type closeIdleRoundTripper struct {
+	closed atomic.Bool
+}
+
+func (c *closeIdleRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+
+func (c *closeIdleRoundTripper) CloseIdleConnections() {
+	c.closed.Store(true)
+}
+
+func TestTLSFingerprintALPNTransportFallsBackAndRemembersH1(t *testing.T) {
+	h2 := &countingRoundTripper{err: errTLSFingerprintWantH2}
+	h1 := &countingRoundTripper{}
+	transport := &tlsFingerprintALPNTransport{h2: h2, h1: h1}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, int64(1), h2.calls.Load())
+	require.Equal(t, int64(1), h1.calls.Load())
+
+	resp, err = transport.RoundTrip(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, int64(1), h2.calls.Load(), "later requests must skip h2 after ALPN mismatch")
+	require.Equal(t, int64(2), h1.calls.Load())
+}
+
+func TestTLSFingerprintALPNTransportRemembersH1PerHost(t *testing.T) {
+	h2 := &countingRoundTripper{}
+	h1 := &countingRoundTripper{}
+	transport := &tlsFingerprintALPNTransport{h2: h2, h1: h1}
+	transport.h1Hosts.Store("relay.example:443", struct{}{})
+
+	_, err := transport.RoundTrip(httptest.NewRequest(http.MethodGet, "https://relay.example/v1/messages", nil))
+	require.NoError(t, err)
+	require.Equal(t, int64(0), h2.calls.Load())
+	require.Equal(t, int64(1), h1.calls.Load())
+
+	_, err = transport.RoundTrip(httptest.NewRequest(http.MethodGet, "https://api.example/v1/messages", nil))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), h2.calls.Load(), "an h1-only host must not downgrade other hosts on the same transport")
+	require.Equal(t, int64(1), h1.calls.Load())
+}
+
+func TestTLSFingerprintALPNHostKey(t *testing.T) {
+	require.Equal(t, "api.example:443", tlsFingerprintALPNHostKey(httptest.NewRequest(http.MethodGet, "https://API.example/x", nil)))
+	require.Equal(t, "api.example:8443", tlsFingerprintALPNHostKey(httptest.NewRequest(http.MethodGet, "https://api.example:8443/x", nil)))
+	require.Equal(t, "", tlsFingerprintALPNHostKey(nil))
+}
+
+func TestTLSFingerprintALPNTransportCloseIdleConnections(t *testing.T) {
+	h2 := &closeIdleRoundTripper{}
+	h1 := &closeIdleRoundTripper{}
+	transport := &tlsFingerprintALPNTransport{h2: h2, h1: h1}
+	transport.CloseIdleConnections()
+	require.True(t, h2.closed.Load())
+	require.True(t, h1.closed.Load())
 }
 
 func startTestSOCKS5Proxy(t *testing.T) (string, *atomic.Int64) {
@@ -669,6 +801,42 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileCustomHeaderTimeout() {
 	require.Equal(s.T(), 1800*time.Second, transport.ResponseHeaderTimeout)
 }
 
+func (s *HTTPUpstreamSuite) TestTLSFingerprintClientCacheKeyIncludesProfileAndALPN() {
+	svc := s.newService()
+	chrome := &tlsfingerprint.Profile{Name: "chrome", ALPNProtocols: []string{"h2", "http/1.1"}}
+	firefox := &tlsfingerprint.Profile{Name: "firefox", ALPNProtocols: []string{"h2", "http/1.1"}}
+	chromeH1 := &tlsfingerprint.Profile{Name: "chrome", ALPNProtocols: []string{"http/1.1"}}
+
+	a, err := svc.getClientEntryWithTLS("", 1, 1, chrome, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	b, err := svc.getClientEntryWithTLS("", 1, 1, firefox, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	c, err := svc.getClientEntryWithTLS("", 1, 1, chromeH1, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	reuse, err := svc.getClientEntryWithTLS("", 1, 1, chrome, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+
+	require.NotSame(s.T(), a, b, "different TLS profiles must not share a client")
+	require.NotSame(s.T(), a, c, "different ALPN must not share a client")
+	require.Same(s.T(), a, reuse, "same profile and ALPN should reuse the cached client")
+}
+
+func (s *HTTPUpstreamSuite) TestTLSFingerprintClientCacheKeyIncludesProfileSettings() {
+	svc := s.newService()
+	before := &tlsfingerprint.Profile{Name: "Node24", CipherSuites: []uint16{0x1301, 0x1302}, ALPNProtocols: []string{"h2", "http/1.1"}}
+	after := &tlsfingerprint.Profile{Name: "Node24", CipherSuites: []uint16{0x1301}, ALPNProtocols: []string{"h2", "http/1.1"}}
+
+	a, err := svc.getClientEntryWithTLS("", 1, 1, before, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	b, err := svc.getClientEntryWithTLS("", 1, 1, after, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	reuse, err := svc.getClientEntryWithTLS("", 1, 1, before, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+
+	require.NotSame(s.T(), a, b, "editing a profile's settings must not reuse the old client")
+	require.Same(s.T(), a, reuse, "unchanged settings should reuse the cached client")
+}
+
 func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGenericHeaderTimeout() {
 	s.cfg.Gateway = config.GatewayConfig{
 		ResponseHeaderTimeout: 600,
@@ -677,7 +845,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGeneric
 		},
 	}
 	svc := s.newService()
-	entry, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "test"}, service.HTTPUpstreamProfileOpenAI, false, false)
+	// 显式 http/1.1 ALPN 的 profile 走 *http.Transport 分支；ALPN 留空的默认
+	// profile 走 h2 + h1 回退包装，OpenAI profile 仍不继承通用 header timeout。
+	entry, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "test", ALPNProtocols: []string{"http/1.1"}}, service.HTTPUpstreamProfileOpenAI, false, false)
 	require.NoError(s.T(), err)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")

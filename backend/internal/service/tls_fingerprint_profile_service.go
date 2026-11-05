@@ -37,6 +37,10 @@ type TLSFingerprintProfileService struct {
 	// 本地 ID→Profile 映射缓存，用于 DoWithTLS 热路径快速查找
 	localCache map[int64]*model.TLSFingerprintProfile
 	localMu    sync.RWMutex
+
+	// randomSticky 把 tls_fingerprint_profile_id=-1 钉在进程内每个账号上，
+	// 避免每请求换 JA3。值为 profile ID；模板被删后重新抽一次。
+	randomSticky sync.Map
 }
 
 // NewTLSFingerprintProfileService 创建 TLS 指纹模板服务
@@ -147,14 +151,18 @@ func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *tlsfingerprint.
 
 // getRandomProfile 从本地缓存中随机选择一个 Profile
 func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profile {
+	_, p := s.pickRandomProfile()
+	return p
+}
+
+func (s *TLSFingerprintProfileService) pickRandomProfile() (int64, *tlsfingerprint.Profile) {
 	s.localMu.RLock()
 	defer s.localMu.RUnlock()
 
 	if len(s.localCache) == 0 {
-		return nil
+		return 0, nil
 	}
 
-	// 收集所有 profile
 	profiles := make([]*model.TLSFingerprintProfile, 0, len(s.localCache))
 	for _, p := range s.localCache {
 		if p != nil {
@@ -162,10 +170,36 @@ func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profil
 		}
 	}
 	if len(profiles) == 0 {
-		return nil
+		return 0, nil
 	}
 
-	return profiles[rand.IntN(len(profiles))].ToTLSProfile()
+	chosen := profiles[rand.IntN(len(profiles))]
+	return chosen.ID, chosen.ToTLSProfile()
+}
+
+func (s *TLSFingerprintProfileService) stickyRandomProfile(accountID int64) *tlsfingerprint.Profile {
+	if v, ok := s.randomSticky.Load(accountID); ok {
+		if id, ok := v.(int64); ok {
+			if p := s.GetProfileByID(id); p != nil {
+				return p
+			}
+			s.randomSticky.Delete(accountID)
+		}
+	}
+	id, p := s.pickRandomProfile()
+	if p == nil {
+		return nil
+	}
+	actual, loaded := s.randomSticky.LoadOrStore(accountID, id)
+	if loaded {
+		if existingID, ok := actual.(int64); ok {
+			if live := s.GetProfileByID(existingID); live != nil {
+				return live
+			}
+			s.randomSticky.Store(accountID, id)
+		}
+	}
+	return p
 }
 
 // ResolveTLSProfile 根据 Account 的配置解析出运行时 TLS Profile
@@ -173,7 +207,8 @@ func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profil
 // 逻辑：
 //  1. 未启用 TLS 指纹 → 返回 nil（不伪装）
 //  2. 启用 + 绑定了 profile_id → 从缓存查找对应 profile
-//  3. 启用 + 未绑定或找不到 → 返回空 Profile（使用代码内置默认值）
+//  3. 启用 + profile_id=-1 → 进程内按账号钉死一次随机选择
+//  4. 启用 + 未绑定或找不到 → 返回空 Profile（使用代码内置默认值）
 func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsfingerprint.Profile {
 	if account == nil || !account.IsTLSFingerprintEnabled() {
 		return nil
@@ -185,8 +220,7 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 		}
 	}
 	if id == -1 {
-		// 随机选择一个 profile
-		if p := s.getRandomProfile(); p != nil {
+		if p := s.stickyRandomProfile(account.ID); p != nil {
 			return p
 		}
 	}

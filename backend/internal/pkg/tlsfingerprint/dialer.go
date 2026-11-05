@@ -25,7 +25,7 @@ type Profile struct {
 	PointFormats        []uint16
 	EnableGREASE        bool
 	SignatureAlgorithms []uint16 // Empty uses defaultSignatureAlgorithms
-	ALPNProtocols       []string // Empty uses ["http/1.1"]
+	ALPNProtocols       []string // Empty uses ["h2", "http/1.1"]（Node.js 24 / 官方 CLI 的 ALPN 顺序）
 	SupportedVersions   []uint16 // Empty uses [TLS1.3, TLS1.2]
 	KeyShareGroups      []uint16 // Empty uses [X25519]
 	PSKModes            []uint16 // Empty uses [psk_dhe_ke]
@@ -358,7 +358,7 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 		}
 	}
 
-	alpnProtocols := []string{"http/1.1"}
+	alpnProtocols := []string{"h2", "http/1.1"}
 	if profile != nil && len(profile.ALPNProtocols) > 0 {
 		alpnProtocols = profile.ALPNProtocols
 	}
@@ -454,6 +454,19 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 		TLSVersMax:         utls.VersionTLS13,
 		TLSVersMin:         utls.VersionTLS10,
 	}
+}
+
+// NegotiatedALPN 返回本包 dialer 产出的连接上协商出的 ALPN 协议，无法判断时返回 ""。
+// HTTP/2 Transport 需要用它确认服务端确实选择了 h2——utls 连接的 ConnectionState
+// 类型与标准库不同，调用方无法直接断言，故在此收敛。
+func NegotiatedALPN(conn net.Conn) string {
+	type utlsStater interface {
+		ConnectionState() utls.ConnectionState
+	}
+	if c, ok := conn.(utlsStater); ok {
+		return c.ConnectionState().NegotiatedProtocol
+	}
+	return ""
 }
 
 // toUint8s converts []uint16 to []uint8 (for utls fields that require []uint8).

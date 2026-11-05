@@ -6,7 +6,9 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -573,9 +575,11 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, upstreamProfile)
-	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
+	// TLS 指纹客户端使用独立的缓存键：同一账号换 profile / ALPN 不能复用旧连接。
+	// 池参数也进缓存键：用量查询按并发 0 取默认池参数，网关请求按账号并发取，
+	// 共用一个键时两者互相把对方判为过期并删除（含进行中的条目）。
 	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls"
+	cacheKey := tlsFingerprintClientCacheKey(isolation, proxyKey, accountID, profile) + "|pool:" + poolKey
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
@@ -1014,6 +1018,57 @@ func buildPoolKey(settings poolSettings, protocolMode string) string {
 	return base + "|proto:" + protocolMode
 }
 
+// tlsFingerprintClientCacheKey 在连接池缓存键上附加 TLS 指纹 profile，
+// 避免不同 JA3/ALPN 共用同一 http.Client。
+func tlsFingerprintClientCacheKey(isolation, proxyKey string, accountID int64, profile *tlsfingerprint.Profile) string {
+	name := "default"
+	alpn := ""
+	cfg := ""
+	if profile != nil {
+		if n := strings.TrimSpace(profile.Name); n != "" {
+			name = n
+		}
+		if len(profile.ALPNProtocols) > 0 {
+			alpn = strings.Join(profile.ALPNProtocols, ",")
+		}
+		cfg = tlsFingerprintProfileSettingsHash(profile)
+	}
+	return "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault) + "|fp:" + name + "|alpn:" + alpn + "|cfg:" + cfg
+}
+
+func tlsFingerprintProfileSettingsHash(profile *tlsfingerprint.Profile) string {
+	if profile == nil {
+		return ""
+	}
+	var b strings.Builder
+	writeU16 := func(vals []uint16) {
+		for i, v := range vals {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, "%d", v)
+		}
+		b.WriteByte('|')
+	}
+	writeU16(profile.CipherSuites)
+	writeU16(profile.Curves)
+	writeU16(profile.PointFormats)
+	writeU16(profile.SignatureAlgorithms)
+	writeU16(profile.SupportedVersions)
+	writeU16(profile.KeyShareGroups)
+	writeU16(profile.PSKModes)
+	writeU16(profile.Extensions)
+	b.WriteString(strings.Join(profile.ALPNProtocols, ","))
+	b.WriteByte('|')
+	if profile.EnableGREASE {
+		b.WriteByte('1')
+	} else {
+		b.WriteByte('0')
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8])
+}
+
 // buildCacheKey 构建客户端缓存键
 // 根据隔离策略决定缓存键的组成
 //
@@ -1450,57 +1505,253 @@ func enableHTTP2KeepAlive(transport *http.Transport, protocolMode string) (*http
 //   - profile: TLS 指纹配置
 //
 // 返回:
-//   - *http.Transport: 配置好的 Transport 实例
+//   - http.RoundTripper: 配置好的 Transport 实例（按 profile 的 ALPN 返回
+//     *http2.Transport 或 *http.Transport）
 //   - error: 配置错误
+//
+// 协议选择：
+//   - profile 的 ALPN 提供 h2（含内置默认 ["h2","http/1.1"]）时，h2 握手使用
+//     profile 的完整 ALPN 列表（与 Node.js / 官方 CLI 的 ClientHello 一致），
+//     协商不是 h2 再回退 http/1.1。*http2.Transport 不能收 http/1.1 连接，
+//     所以回退走单独的 *http.Transport。h2 路径用 RoundTrip 包装补回
+//     ResponseHeaderTimeout。
+//   - profile 显式只提供 http/1.1 时，返回带自定义 DialTLSContext 的 *http.Transport。
 //
 // 代理类型处理:
 //   - nil/空: 直连，使用 TLSFingerprintDialer
 //   - http/https: HTTP 代理，使用 HTTPProxyDialer（CONNECT 隧道 + utls 握手）
 //   - socks5: SOCKS5 代理，使用 SOCKS5ProxyDialer（SOCKS5 隧道 + utls 握手）
-func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (*http.Transport, error) {
+func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (http.RoundTripper, error) {
+	if proxyURL != nil && strings.EqualFold(proxyURL.Scheme, "https") {
+		// The fingerprint dialer emits a plaintext CONNECT preface and cannot
+		// establish TLS to an HTTPS proxy. Keep proxy routing via net/http.
+		return buildUpstreamTransport(settings, proxyURL, upstreamProtocolModeDefault)
+	}
+
+	// 根据代理类型选择合适的 TLS 指纹 Dialer
+	newDialers := func(p *tlsfingerprint.Profile) func(context.Context, string, string) (net.Conn, error) {
+		if proxyURL == nil {
+			// 直连：使用 TLSFingerprintDialer
+			return tlsfingerprint.NewDialer(p, nil).DialTLSContext
+		}
+		switch strings.ToLower(proxyURL.Scheme) {
+		case "socks5", "socks5h":
+			// SOCKS5 代理：使用 SOCKS5ProxyDialer
+			return tlsfingerprint.NewSOCKS5ProxyDialer(p, proxyURL).DialTLSContext
+		case "http":
+			// HTTP 代理：使用 HTTPProxyDialer（CONNECT 隧道）
+			return tlsfingerprint.NewHTTPProxyDialer(p, proxyURL).DialTLSContext
+		}
+		return nil
+	}
+
+	if tlsFingerprintProfileOffersH2(profile) {
+		h1Profile := tlsFingerprintProfileWithALPN(profile, []string{"http/1.1"})
+		h1Transport, err := newTLSFingerprintH1Transport(settings, proxyURL, newDialers(h1Profile))
+		if err != nil {
+			return nil, err
+		}
+		if dial := newDialers(profile); dial != nil {
+			h2Transport := &http2.Transport{
+				ReadIdleTimeout: longStreamHTTP2ReadIdleTimeout,
+				PingTimeout:     longStreamHTTP2PingTimeout,
+				IdleConnTimeout: settings.idleConnTimeout,
+			}
+			h2Transport.DialTLSContext = func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+				conn, err := dial(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				if negotiated := tlsfingerprint.NegotiatedALPN(conn); negotiated != "h2" {
+					_ = conn.Close()
+					return nil, fmt.Errorf("%w: negotiated %q", errTLSFingerprintWantH2, negotiated)
+				}
+				return conn, nil
+			}
+			return &tlsFingerprintALPNTransport{
+				h2:            h2Transport,
+				h1:            h1Transport,
+				headerTimeout: settings.responseHeaderTimeout,
+			}, nil
+		}
+		return h1Transport, nil
+	}
+
+	return newTLSFingerprintH1Transport(settings, proxyURL, newDialers(profile))
+}
+
+var (
+	errTLSFingerprintWantH2        = errors.New("tls fingerprint: upstream did not negotiate h2")
+	errTLSFingerprintHeaderTimeout = errors.New("tls fingerprint: timeout awaiting response headers")
+)
+
+func newTLSFingerprintH1Transport(settings poolSettings, proxyURL *url.URL, dial func(context.Context, string, string) (net.Conn, error)) (*http.Transport, error) {
 	transport := &http.Transport{
 		MaxIdleConns:          settings.maxIdleConns,
 		MaxIdleConnsPerHost:   settings.maxIdleConnsPerHost,
 		MaxConnsPerHost:       settings.maxConnsPerHost,
 		IdleConnTimeout:       settings.idleConnTimeout,
 		ResponseHeaderTimeout: settings.responseHeaderTimeout,
-		// 禁用默认的 TLS，我们使用自定义的 DialTLSContext
-		ForceAttemptHTTP2: false,
+		ForceAttemptHTTP2:     false,
 	}
-
-	// 根据代理类型选择合适的 TLS 指纹 Dialer
-	if proxyURL == nil {
-		// 直连：使用 TLSFingerprintDialer
-		slog.Debug("tls_fingerprint_transport_direct")
-		dialer := tlsfingerprint.NewDialer(profile, nil)
-		transport.DialTLSContext = dialer.DialTLSContext
-	} else {
-		scheme := strings.ToLower(proxyURL.Scheme)
-		switch scheme {
-		case "socks5", "socks5h":
-			// SOCKS5 代理：使用 SOCKS5ProxyDialer
-			slog.Debug("tls_fingerprint_transport_socks5", "proxy", proxyURL.Host)
-			socks5Dialer := tlsfingerprint.NewSOCKS5ProxyDialer(profile, proxyURL)
-			transport.DialTLSContext = socks5Dialer.DialTLSContext
-		case "https":
-			// The fingerprint dialer emits a plaintext CONNECT preface and cannot
-			// establish TLS to an HTTPS proxy. Keep proxy routing via net/http.
-			return buildUpstreamTransport(settings, proxyURL, upstreamProtocolModeDefault)
-		case "http":
-			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（CONNECT 隧道）
-			slog.Debug("tls_fingerprint_transport_http_connect", "proxy", proxyURL.Host)
-			httpDialer := tlsfingerprint.NewHTTPProxyDialer(profile, proxyURL)
-			transport.DialTLSContext = httpDialer.DialTLSContext
-		default:
-			// 未知代理类型，回退到普通代理配置（无 TLS 指纹）
-			slog.Debug("tls_fingerprint_transport_unknown_scheme_fallback", "scheme", scheme)
-			if err := proxyutil.ConfigureTransportProxy(transport, proxyURL); err != nil {
-				return nil, err
-			}
+	if dial != nil {
+		transport.DialTLSContext = dial
+		return transport, nil
+	}
+	if proxyURL != nil {
+		slog.Debug("tls_fingerprint_transport_unknown_scheme_fallback", "scheme", proxyURL.Scheme)
+		if err := proxyutil.ConfigureTransportProxy(transport, proxyURL); err != nil {
+			return nil, err
 		}
 	}
-
 	return transport, nil
+}
+
+// tlsFingerprintALPNTransport 先走 HTTP/2；握手 ALPN 不是 h2 时回退 HTTP/1.1。
+// *http2.Transport 没有 ResponseHeaderTimeout，用 RoundTrip 包装补回。
+// h1Hosts 按目标 host:port 记录 ALPN 未协商出 h2 的上游，后续发往该目标的
+// 请求不再先握 h2。按目标记录是因为 proxy 隔离模式下多个上游共用同一 transport。
+type tlsFingerprintALPNTransport struct {
+	h2            http.RoundTripper
+	h1            http.RoundTripper
+	headerTimeout time.Duration
+	h1Hosts       sync.Map
+}
+
+func (t *tlsFingerprintALPNTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t == nil {
+		return nil, errors.New("tls fingerprint: nil transport")
+	}
+	hostKey := tlsFingerprintALPNHostKey(req)
+	if _, preferH1 := t.h1Hosts.Load(hostKey); !preferH1 && t.h2 != nil {
+		resp, err := roundTripWithHeaderTimeout(t.h2, req, t.headerTimeout)
+		if err == nil || !isTLSFingerprintALPNMismatch(err) {
+			return resp, err
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		t.h1Hosts.Store(hostKey, struct{}{})
+	}
+	if t.h1 == nil {
+		return nil, errTLSFingerprintWantH2
+	}
+	return t.h1.RoundTrip(req)
+}
+
+func (t *tlsFingerprintALPNTransport) CloseIdleConnections() {
+	if t == nil {
+		return
+	}
+	type closeIdler interface {
+		CloseIdleConnections()
+	}
+	if c, ok := t.h2.(closeIdler); ok {
+		c.CloseIdleConnections()
+	}
+	if c, ok := t.h1.(closeIdler); ok {
+		c.CloseIdleConnections()
+	}
+}
+
+// tlsFingerprintALPNHostKey 返回请求目标的 host:port，缺省端口按 scheme 补齐。
+func tlsFingerprintALPNHostKey(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	port := req.URL.Port()
+	if port == "" {
+		port = "443"
+		if strings.EqualFold(req.URL.Scheme, "http") {
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(strings.ToLower(req.URL.Hostname()), port)
+}
+
+// tlsFingerprintHeaderTimeoutError 与 http.Transport 的 ResponseHeaderTimeout
+// 错误一致：实现 net.Error 且 Timeout() 为 true，不包裹 context.Canceled，
+// 网关按传输错误 failover。
+type tlsFingerprintHeaderTimeoutError struct {
+	timeout time.Duration
+}
+
+func (e *tlsFingerprintHeaderTimeoutError) Error() string {
+	return fmt.Sprintf("%s after %s", errTLSFingerprintHeaderTimeout.Error(), e.timeout)
+}
+
+func (e *tlsFingerprintHeaderTimeoutError) Timeout() bool   { return true }
+func (e *tlsFingerprintHeaderTimeoutError) Temporary() bool { return true }
+
+func (e *tlsFingerprintHeaderTimeoutError) Is(target error) bool {
+	return target == errTLSFingerprintHeaderTimeout
+}
+
+func roundTripWithHeaderTimeout(rt http.RoundTripper, req *http.Request, timeout time.Duration) (*http.Response, error) {
+	if timeout <= 0 {
+		return rt.RoundTrip(req)
+	}
+	parent := req.Context()
+	ctx, cancel := context.WithCancel(parent)
+	timer := time.AfterFunc(timeout, cancel)
+	resp, err := rt.RoundTrip(req.WithContext(ctx))
+	stopped := timer.Stop()
+	if err != nil {
+		cancel()
+		// http2 RoundTrip 在我们 cancel 后返回 context.Canceled；网关会把
+		// 它当成客户端断开而不 failover。定时器触发且父 ctx 仍活着时换成
+		// 独立的超时错误。
+		if !stopped && parent.Err() == nil {
+			return nil, &tlsFingerprintHeaderTimeoutError{timeout: timeout}
+		}
+		return nil, err
+	}
+	if !stopped {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+		return nil, &tlsFingerprintHeaderTimeoutError{timeout: timeout}
+	}
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+func isTLSFingerprintALPNMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errTLSFingerprintWantH2) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "want h2") ||
+		strings.Contains(msg, "no_application_protocol") ||
+		strings.Contains(msg, "no application protocol")
+}
+
+// tlsFingerprintProfileOffersH2 报告 profile 的 ALPN 是否提供 h2。
+// ALPN 留空时使用内置默认 ["h2","http/1.1"]（对齐 Node.js 24 / 官方 CLI），视为提供。
+func tlsFingerprintProfileOffersH2(profile *tlsfingerprint.Profile) bool {
+	if profile == nil || len(profile.ALPNProtocols) == 0 {
+		return true
+	}
+	for _, p := range profile.ALPNProtocols {
+		if p == "h2" {
+			return true
+		}
+	}
+	return false
+}
+
+// tlsFingerprintProfileWithALPN 返回一份 ALPN 被覆盖的 profile 副本（不修改原值）。
+func tlsFingerprintProfileWithALPN(profile *tlsfingerprint.Profile, alpn []string) *tlsfingerprint.Profile {
+	if profile == nil {
+		return &tlsfingerprint.Profile{ALPNProtocols: alpn}
+	}
+	clone := *profile
+	clone.ALPNProtocols = alpn
+	return &clone
 }
 
 // trackedBody 带跟踪功能的响应体包装器
