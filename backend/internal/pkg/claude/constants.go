@@ -5,11 +5,10 @@ package claude
 
 // Beta header 常量
 //
-// 这里的常量对齐真实 Claude Code CLI 的最新流量（截至 2026-04）。
-// 选型参考：与 Parrot (src/transform/cc_mimicry.py) 的 BETAS 保持一致，
-// 原因：Anthropic 上游会基于 anthropic-beta 的完整集合判定请求来源；
-// 缺少任何"官方 Claude Code 请求才会带"的 beta，都会被降级到第三方额度，
-// 对应报错：`Third-party apps now draw from your extra usage, not your plan limits.`
+// 集合来自 Parrot BETAS 与仓库内既有抓包备注（截至 2026-04），不是本机对
+// api.anthropic.com 的官方 CLI 抓包。官方流量到位后再校正成员和顺序。
+// Anthropic 会按 anthropic-beta 集合判定请求来源；缺官方才会带的 beta
+// 可能被降到第三方额度：`Third-party apps now draw from your extra usage, not your plan limits.`
 const (
 	BetaOAuth                    = "oauth-2025-04-20"
 	BetaClaudeCode               = "claude-code-20250219"
@@ -24,7 +23,7 @@ const (
 	BetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
 	BetaInlineTools                = "inline-tools-2026-09-15"
 
-	// 新增（对齐官方 CLI 2.1.9x 以来的流量）
+	// 仓库记录的较新 CLI beta；官方抓包确认前按最佳努力保留。
 	BetaPromptCachingScope          = "prompt-caching-scope-2026-01-05"
 	BetaEffort                      = "effort-2025-11-24"
 	BetaRedactThinking              = "redact-thinking-2026-02-12"
@@ -89,9 +88,9 @@ const DefaultCacheControlTTL = "5m"
 // 直接引用本常量只在"表达内置基线"时才正确（例如覆盖值的下限校验）。
 const CLICurrentVersion = "2.1.258"
 
-// FullClaudeCodeMimicryBetas 返回最"像"真实 Claude Code CLI 的完整 beta 列表，
-// 用于 OAuth 账号伪装成 Claude Code 时使用。
-// 顺序与真实 CLI 抓包一致。
+// FullClaudeCodeMimicryBetas 返回 OAuth 伪装 Claude Code 时使用的 beta 列表。
+// 含 fine-grained-tool-streaming（DefaultBetaHeader 已带）；没有官方抓包前
+// 不从这份列表拿掉。顺序按仓库记录排列，待官方 CLI 抓包确认。
 //
 // 使用建议：
 //   - OAuth mimic：所有模型（包括 Haiku）都使用这整份列表。
@@ -103,6 +102,7 @@ func FullClaudeCodeMimicryBetas() []string {
 		BetaClaudeCode,
 		BetaOAuth,
 		BetaInterleavedThinking,
+		BetaFineGrainedToolStreaming,
 		BetaPromptCachingScope,
 		BetaEffort,
 		BetaContextManagement,

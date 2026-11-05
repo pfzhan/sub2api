@@ -2481,12 +2481,22 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 	return a.Platform == PlatformAnthropic && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
 }
 
-// IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
-// 仅适用于 Anthropic OAuth/SetupToken 类型账号
-// 启用后将模拟 Claude Code (Node.js) 客户端的 TLS 握手特征
+// supportsTLSFingerprint 报告该账号类型是否允许 TLS 指纹伪装。
+// Anthropic OAuth/SetupToken 与 Kiro OAuth 可按 extra 开关启用；默认关闭。
+func (a *Account) supportsTLSFingerprint() bool {
+	if a == nil {
+		return false
+	}
+	if a.IsAnthropicOAuthOrSetupToken() {
+		return true
+	}
+	return a.IsKiro() && a.Type == AccountTypeOAuth
+}
+
+// IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装。
+// 适用于 Anthropic OAuth/SetupToken 与 Kiro OAuth；默认关闭，需 extra.enable_tls_fingerprint=true。
 func (a *Account) IsTLSFingerprintEnabled() bool {
-	// 仅支持 Anthropic OAuth/SetupToken 账号
-	if !a.IsAnthropicOAuthOrSetupToken() {
+	if !a.supportsTLSFingerprint() {
 		return false
 	}
 	if a.Extra == nil {
@@ -2547,21 +2557,23 @@ func (a *Account) GetUserMsgQueueMode() string {
 
 // IsSessionIDMaskingEnabled 检查是否启用会话ID伪装
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
-// 启用后将在一段时间内（15分钟）固定 metadata.user_id 中的 session ID，
-// 使上游认为请求来自同一个会话
+// 启用后将在一段时间内（默认 2 小时，随请求续期）固定 metadata.user_id 中的
+// session ID，使上游认为请求来自同一个会话。
+// 对 OAuth 账号默认开启（显式设置 session_id_masking_enabled=false 可关闭）：
+// 默认关闭时同一 OAuth 身份上会同时出现大量并发 session，是典型的多租户信号。
 func (a *Account) IsSessionIDMaskingEnabled() bool {
 	if !a.IsAnthropicOAuthOrSetupToken() {
 		return false
 	}
 	if a.Extra == nil {
-		return false
+		return true
 	}
 	if v, ok := a.Extra["session_id_masking_enabled"]; ok {
 		if enabled, ok := v.(bool); ok {
 			return enabled
 		}
 	}
-	return false
+	return true
 }
 
 // IsCustomBaseURLEnabled 检查是否启用自定义 base URL 中继转发

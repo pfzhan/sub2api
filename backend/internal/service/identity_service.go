@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -151,11 +154,14 @@ type IdentityCache interface {
 	SetFingerprint(ctx context.Context, accountID int64, fp *Fingerprint) error
 	// GetMaskedSessionID 获取固定的会话ID（用于会话ID伪装功能）
 	// 返回的 sessionID 是一个 UUID 格式的字符串
-	// 如果不存在或已过期（15分钟无请求），返回空字符串
+	// 如果不存在或已过期（默认 2 小时无请求），返回空字符串
 	GetMaskedSessionID(ctx context.Context, accountID int64) (string, error)
-	// SetMaskedSessionID 设置固定的会话ID，TTL 为 15 分钟
-	// 每次调用都会刷新 TTL
+	// SetMaskedSessionID 写入伪装 session ID 并设置 2 小时 TTL。
+	// 只在首次生成或过期重建时调用，不要每请求 SET。
 	SetMaskedSessionID(ctx context.Context, accountID int64, sessionID string) error
+	// TouchMaskedSessionID 在剩余 TTL 低于刷新阈值时把 TTL 续到 2 小时。
+	// TTL 仍充足时不写 Redis。
+	TouchMaskedSessionID(ctx context.Context, accountID int64) error
 }
 
 // IdentityService 管理OAuth账号的请求身份指纹
@@ -255,6 +261,14 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 	fp.ClientID = generateClientID()
 	fp.UpdatedAt = time.Now().Unix()
 
+	// 读缓存失败（连接、超时等）时缓存里可能仍有指纹，写回会用新 ClientID 和
+	// 默认值把它覆盖。本次请求使用临时指纹，不落库。
+	if err != nil && !fingerprintCacheMissing(err) {
+		logger.LegacyPrintf("service.identity",
+			"Warning: failed to read fingerprint for account %d, using a temporary one without caching: %v", accountID, err)
+		return fp, nil
+	}
+
 	// 保存到缓存（7天TTL，每24小时自动续期）
 	if err := s.cache.SetFingerprint(ctx, accountID, fp); err != nil {
 		logger.LegacyPrintf("service.identity", "Warning: failed to cache fingerprint for account %d: %v", accountID, err)
@@ -262,6 +276,17 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 
 	logger.LegacyPrintf("service.identity", "Created new fingerprint for account %d with client_id: %s", accountID, fp.ClientID)
 	return fp, nil
+}
+
+// fingerprintCacheMissing 报告读取错误是否表示缓存里没有可用指纹：键不存在
+// 或内容无法解析。只有这两种情况可以新建指纹并写回。
+func fingerprintCacheMissing(err error) bool {
+	if errors.Is(err, redis.Nil) {
+		return true
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
 }
 
 // createFingerprintFromHeaders 从请求头创建指纹
@@ -278,41 +303,71 @@ func (s *IdentityService) createFingerprintFromHeaders(headers http.Header) *Fin
 		fp.UserAgent = defaultFingerprint().UserAgent
 	}
 
-	// 获取x-stainless-*头，如果没有则使用默认值
-	df := defaultFingerprint()
-	fp.StainlessLang = getHeaderOrDefault(headers, "X-Stainless-Lang", df.StainlessLang)
-	fp.StainlessPackageVersion = getHeaderOrDefault(headers, "X-Stainless-Package-Version", df.StainlessPackageVersion)
-	fp.StainlessOS = getHeaderOrDefault(headers, "X-Stainless-OS", df.StainlessOS)
-	fp.StainlessArch = getHeaderOrDefault(headers, "X-Stainless-Arch", df.StainlessArch)
-	fp.StainlessRuntime = getHeaderOrDefault(headers, "X-Stainless-Runtime", df.StainlessRuntime)
-	fp.StainlessRuntimeVersion = getHeaderOrDefault(headers, "X-Stainless-Runtime-Version", df.StainlessRuntimeVersion)
-
+	applyStainlessToFingerprint(fp, headers, true)
 	return fp
 }
 
+// stainlessLooksLikeClaudeCode 判断请求头是否是 Claude Code 的 js/node Stainless SDK。
+// Python/Java 等 SDK 的 X-Stainless-* 与 claude-cli User-Agent 混在一起是第三方信号。
+func stainlessLooksLikeClaudeCode(headers http.Header) bool {
+	lang := strings.TrimSpace(headers.Get("X-Stainless-Lang"))
+	runtime := strings.TrimSpace(headers.Get("X-Stainless-Runtime"))
+	return strings.EqualFold(lang, "js") && strings.EqualFold(runtime, "node")
+}
+
+// applyStainlessToFingerprint 写入 Claude Code 形态的 Stainless 字段。
+// OS/Arch 是机器身份，可从任意客户端保留；lang/package/runtime 只接受 js/node，
+// 否则用 defaultFingerprint，避免首个 Python SDK 请求把账号指纹毒化成非 CLI。
+func applyStainlessToFingerprint(fp *Fingerprint, headers http.Header, fillDefaults bool) {
+	if fp == nil {
+		return
+	}
+	df := defaultFingerprint()
+	if stainlessLooksLikeClaudeCode(headers) {
+		applyStainlessHeader(fp, headers, fillDefaults, df)
+	} else if fillDefaults {
+		fp.StainlessLang = df.StainlessLang
+		fp.StainlessPackageVersion = df.StainlessPackageVersion
+		fp.StainlessRuntime = df.StainlessRuntime
+		fp.StainlessRuntimeVersion = df.StainlessRuntimeVersion
+	}
+	if osName := strings.TrimSpace(headers.Get("X-Stainless-OS")); osName != "" {
+		fp.StainlessOS = osName
+	} else if fillDefaults && fp.StainlessOS == "" {
+		fp.StainlessOS = df.StainlessOS
+	}
+	if arch := strings.TrimSpace(headers.Get("X-Stainless-Arch")); arch != "" {
+		fp.StainlessArch = arch
+	} else if fillDefaults && fp.StainlessArch == "" {
+		fp.StainlessArch = df.StainlessArch
+	}
+}
+
 // mergeHeadersIntoFingerprint 将请求头中实际存在的字段合并到现有指纹中（用于版本升级场景）
-// 关键语义：请求中有的字段 → 用新值覆盖；缺失的头 → 保留缓存中的已有值
-// 与 createFingerprintFromHeaders 的区别：后者用于首次创建，缺失头回退到 defaultFingerprint；
-// 本函数用于升级更新，缺失头保留缓存值，避免将已知的真实值退化为硬编码默认值
+// 关键语义：请求中有的字段 → 用新值覆盖；缺失的头 → 保留缓存中的已有值。
+// 非 js/node 的 Stainless lang/runtime/package 不合并，避免 Python SDK 毒化 CLI 指纹。
 func mergeHeadersIntoFingerprint(fp *Fingerprint, headers http.Header) {
 	// User-Agent：版本升级的触发条件，一定存在
 	if ua := headers.Get("User-Agent"); ua != "" {
 		fp.UserAgent = ua
 	}
-	// X-Stainless-* 头：仅在请求中实际携带时才更新，否则保留缓存值
-	mergeHeader(headers, "X-Stainless-Lang", &fp.StainlessLang)
-	mergeHeader(headers, "X-Stainless-Package-Version", &fp.StainlessPackageVersion)
-	mergeHeader(headers, "X-Stainless-OS", &fp.StainlessOS)
-	mergeHeader(headers, "X-Stainless-Arch", &fp.StainlessArch)
-	mergeHeader(headers, "X-Stainless-Runtime", &fp.StainlessRuntime)
-	mergeHeader(headers, "X-Stainless-Runtime-Version", &fp.StainlessRuntimeVersion)
+	applyStainlessToFingerprint(fp, headers, false)
 }
 
-// mergeHeader 如果请求头中存在该字段则更新目标值，否则保留原值
-func mergeHeader(headers http.Header, key string, target *string) {
-	if v := headers.Get(key); v != "" {
-		*target = v
+func applyStainlessHeader(fp *Fingerprint, headers http.Header, fillDefaults bool, df Fingerprint) {
+	set := func(dst *string, key, fallback string) {
+		if v := strings.TrimSpace(headers.Get(key)); v != "" {
+			*dst = v
+			return
+		}
+		if fillDefaults {
+			*dst = fallback
+		}
 	}
+	set(&fp.StainlessLang, "X-Stainless-Lang", df.StainlessLang)
+	set(&fp.StainlessPackageVersion, "X-Stainless-Package-Version", df.StainlessPackageVersion)
+	set(&fp.StainlessRuntime, "X-Stainless-Runtime", df.StainlessRuntime)
+	set(&fp.StainlessRuntimeVersion, "X-Stainless-Runtime-Version", df.StainlessRuntimeVersion)
 }
 
 // getHeaderOrDefault 获取header值，如果不存在则返回默认值
@@ -411,12 +466,13 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
 }
 
 // RewriteUserIDWithMasking 重写body中的metadata.user_id，支持会话ID伪装
-// 如果账号启用了会话ID伪装（session_id_masking_enabled），
-// 则在完成常规重写后，将 session 部分替换为固定的伪装ID（15分钟内保持不变）
+// 如果账号启用了会话ID伪装（session_id_masking_enabled，OAuth 账号默认开启），
+// 则在完成常规重写后，将 session 部分替换为固定的伪装ID（有效期内保持不变）。
+// apiKeyID > 0 时伪装 ID 按 API Key 区分，同一账号下不同 API Key 不共用会话。
 //
 // 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
 // 避免重新序列化导致 thinking 块等内容被修改。
-func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []byte, account *Account, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
+func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []byte, account *Account, apiKeyID int64, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
 	// 先执行常规的 RewriteUserID 逻辑
 	newBody, err := s.RewriteUserID(body, account.ID, accountUUID, cachedClientID, fingerprintUA)
 	if err != nil {
@@ -462,12 +518,14 @@ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []b
 		// 首次或已过期，生成新的伪装 session ID
 		maskedSessionID = generateRandomUUID()
 		logger.LegacyPrintf("service.identity", "Generated new masked session ID for account %d: %s", account.ID, maskedSessionID)
+		if err := s.cache.SetMaskedSessionID(ctx, account.ID, maskedSessionID); err != nil {
+			logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for account %d: %v", account.ID, err)
+		}
+	} else if err := s.cache.TouchMaskedSessionID(ctx, account.ID); err != nil {
+		logger.LegacyPrintf("service.identity", "Warning: failed to touch masked session ID for account %d: %v", account.ID, err)
 	}
 
-	// 刷新 TTL（每次请求都刷新，保持 15 分钟有效期）
-	if err := s.cache.SetMaskedSessionID(ctx, account.ID, maskedSessionID); err != nil {
-		logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for account %d: %v", account.ID, err)
-	}
+	maskedSessionID = maskedSessionIDForAPIKey(maskedSessionID, apiKeyID)
 
 	// 用 FormatMetadataUserID 重建（保持与 RewriteUserID 相同的格式）
 	version := ExtractCLIVersion(fingerprintUA)
@@ -488,6 +546,20 @@ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []b
 		return newBody, nil
 	}
 	return maskedBody, nil
+}
+
+// maskedSessionIDForAPIKey 从账号级伪装 session ID 派生出该 API Key 的伪装 ID。
+// 同一账号、同一 API Key 在账号级 ID 有效期内得到相同结果，账号级 ID 轮换时随之
+// 轮换；apiKeyID <= 0（取不到 API Key）时沿用账号级 ID。
+func maskedSessionIDForAPIKey(accountSessionID string, apiKeyID int64) string {
+	if apiKeyID <= 0 || accountSessionID == "" {
+		return accountSessionID
+	}
+	sum := sha256.Sum256([]byte(accountSessionID + ":" + strconv.FormatInt(apiKeyID, 10)))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // generateRandomUUID 生成随机 UUID v4 格式字符串

@@ -2642,6 +2642,45 @@
         </template>
       </div>
 
+      <!-- TLS Fingerprint (Kiro OAuth; Anthropic has the same card in quota control) -->
+      <div
+        v-if="form.platform === 'kiro'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.tlsFingerprint.label') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.quotaControl.tlsFingerprint.hint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="tlsFingerprintEnabled = !tlsFingerprintEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                tlsFingerprintEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  tlsFingerprintEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="tlsFingerprintEnabled" class="mt-3">
+            <select v-model="tlsFingerprintProfileId" class="input">
+              <option :value="null">{{ t('admin.accounts.quotaControl.tlsFingerprint.defaultProfile') }}</option>
+              <option v-if="tlsFingerprintProfiles.length > 0" :value="-1">{{ t('admin.accounts.quotaControl.tlsFingerprint.randomProfile') }}</option>
+              <option v-for="p in tlsFingerprintProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <!-- Temp Unschedulable Rules -->
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
         <div class="mb-3 flex items-center justify-between">
@@ -4934,7 +4973,7 @@ const umqModeOptions = computed(() => [
 const tlsFingerprintEnabled = ref(false)
 const tlsFingerprintProfileId = ref<number | null>(null)
 const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
-const sessionIdMaskingEnabled = ref(false)
+const sessionIdMaskingEnabled = ref(true)
 const cacheTTLOverrideEnabled = ref(false)
 const cacheTTLOverrideTarget = ref<string>('5m')
 const customBaseUrlEnabled = ref(false)
@@ -5749,7 +5788,7 @@ const resetForm = () => {
   userMsgQueueMode.value = ''
   tlsFingerprintEnabled.value = false
   tlsFingerprintProfileId.value = null
-  sessionIdMaskingEnabled.value = false
+  sessionIdMaskingEnabled.value = true
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
   customBaseUrlEnabled.value = false
@@ -7252,7 +7291,14 @@ const handleKiroAuthorized = async (credentials: Record<string, unknown>) => {
   if (modelMapping) {
     credentials.model_mapping = modelMapping
   }
-  await createAccountAndFinish('kiro', 'oauth', credentials)
+  const extra: Record<string, unknown> = {}
+  if (tlsFingerprintEnabled.value) {
+    extra.enable_tls_fingerprint = true
+    if (tlsFingerprintProfileId.value) {
+      extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+    }
+  }
+  await createAccountAndFinish('kiro', 'oauth', credentials, extra)
 }
 
 // Grok OAuth 授权码兑换
@@ -7353,10 +7399,7 @@ const handleAnthropicExchange = async (authCode: string) => {
       }
     }
 
-    // Add session ID masking settings
-    if (sessionIdMaskingEnabled.value) {
-      extra.session_id_masking_enabled = true
-    }
+    extra.session_id_masking_enabled = sessionIdMaskingEnabled.value
 
     // Add cache TTL override settings
     if (cacheTTLOverrideEnabled.value) {
@@ -7478,10 +7521,7 @@ const handleCookieAuth = async (sessionKey: string) => {
           }
         }
 
-        // Add session ID masking settings
-        if (sessionIdMaskingEnabled.value) {
-          extra.session_id_masking_enabled = true
-        }
+        extra.session_id_masking_enabled = sessionIdMaskingEnabled.value
 
         // Add cache TTL override settings
         if (cacheTTLOverrideEnabled.value) {

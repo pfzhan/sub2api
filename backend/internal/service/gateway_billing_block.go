@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"unicode/utf16"
 
 	"github.com/tidwall/gjson"
@@ -53,6 +54,11 @@ func computeClaudeCodeFingerprint(body []byte, version string) string {
 
 // extractFirstUserText 提取 messages 中第一条 user 消息的首段 text 内容。
 // 兼容 string 和 []block 两种 content 格式。
+//
+// OAuth mimic 路径会把原始 system 改写为 "[System Instructions]\n..." 注入到
+// messages 开头；该消息不是真实 CLI 的 first user text。billing 指纹
+// （cc_version=X.Y.Z.{fp}）的采样必须跳过它，否则所有带 system 的请求在
+// 下标 4/7/20 处采到固定字符，全账号 fp 后缀完全相同，成为第三方信号。
 func extractFirstUserText(body []byte) string {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
@@ -65,17 +71,25 @@ func extractFirstUserText(body []byte) string {
 		}
 		content := msg.Get("content")
 		if content.Type == gjson.String {
-			first = content.String()
-			return false
+			if text := content.String(); !strings.HasPrefix(text, injectedSystemInstructionsPrefix) {
+				first = text
+				return false
+			}
+			return true
 		}
 		if content.IsArray() {
+			text := ""
 			content.ForEach(func(_, block gjson.Result) bool {
 				if block.Get("type").String() == "text" {
-					first = block.Get("text").String()
+					text = block.Get("text").String()
 					return false
 				}
 				return true
 			})
+			if strings.HasPrefix(text, injectedSystemInstructionsPrefix) {
+				return true
+			}
+			first = text
 			return false
 		}
 		return false

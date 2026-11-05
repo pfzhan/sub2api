@@ -112,7 +112,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			if !enableMPT {
 				accountUUID := account.GetExtraString("account_uuid")
 				if accountUUID != "" && fp.ClientID != "" {
-					if newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, fp.UserAgent); err == nil && len(newBody) > 0 {
+					if newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, getAPIKeyIDFromContext(c), accountUUID, fp.ClientID, fp.UserAgent); err == nil && len(newBody) > 0 {
 						body = newBody
 					}
 				}
@@ -225,14 +225,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		setHeaderRaw(req.Header, "anthropic-beta", finalBetaHeader)
 	}
 
-	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖
-	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" {
-		if uid := gjson.GetBytes(body, "metadata.user_id").String(); uid != "" {
-			if parsed := ParseMetadataUserID(uid); parsed != nil {
-				setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", parsed.SessionID)
-			}
-		}
-	}
+	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id。
+	// 官方 CLI 每个请求都带这个头，且与 metadata.user_id.session_id 一致。mimic 路径
+	// 不透传客户端头，客户端通常也不带这个头——只在头已存在时同步会让 mimic 请求
+	// 缺这个官方 CLI 必带的头，因此 mimic 下按 metadata 补写。
+	syncClaudeCodeSessionIDHeader(req.Header, body, tokenType == "oauth" && mimicClaudeCode)
 
 	// 账号级请求头覆写（仅 anthropic/openai api_key 账号启用时生效；OAuth 路径 no-op）。
 	// 放在所有 header 逻辑之后，确保配置值对同名头拥有最终决定权。
@@ -261,6 +258,24 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	return req, body, nil
 }
 
+// syncClaudeCodeSessionIDHeader 用 body 中已处理的 metadata.user_id 的 session_id
+// 同步 X-Claude-Code-Session-Id 头。forceSet 为 true（OAuth mimic）时即使客户端没
+// 带这个头也补写——官方 CLI 每个请求都带；否则仅在该头已存在时同步覆盖。
+func syncClaudeCodeSessionIDHeader(header http.Header, body []byte, forceSet bool) {
+	uid := gjson.GetBytes(body, "metadata.user_id").String()
+	if uid == "" {
+		return
+	}
+	parsed := ParseMetadataUserID(uid)
+	if parsed == nil || parsed.SessionID == "" {
+		return
+	}
+	if forceSet || getHeaderRaw(header, "X-Claude-Code-Session-Id") != "" {
+		setHeaderRaw(header, "X-Claude-Code-Session-Id", parsed.SessionID)
+	}
+}
+
+// getAnthropicGatewayBaseURL 获取 Anthropic 协议账号的网关 base URL
 func getAnthropicGatewayBaseURL(account *Account) string {
 	if account == nil {
 		return ""
@@ -972,6 +987,11 @@ func applyClaudeCodeMimicHeaders(req *http.Request, isStream bool, mimicUserAgen
 		if key == "User-Agent" {
 			// 版本号与 billing 路径共用同一字符串（见 mimicUserAgent 注释）。
 			value = mimicUserAgent
+		} else if key == "X-Stainless-OS" || key == "X-Stainless-Arch" {
+			// OS/Arch 是按账号保留的机器身份；lang/runtime/package 必须是 Claude Code 的 js/node。
+			if getHeaderRaw(req.Header, key) != "" {
+				continue
+			}
 		}
 		setHeaderRaw(req.Header, resolveWireCasing(key), value)
 	}

@@ -14,7 +14,13 @@ const (
 	fingerprintKeyPrefix   = "fingerprint:"
 	fingerprintTTL         = 7 * 24 * time.Hour // 7天，配合每24小时懒续期可保持活跃账号永不过期
 	maskedSessionKeyPrefix = "masked_session:"
-	maskedSessionTTL       = 15 * time.Minute
+	// maskedSessionTTL 是伪装 session ID 的有效期。官方 CLI 的 session 是进程级、
+	// 直到退出才更换，15 分钟轮换会让同一 OAuth 身份上出现大量短会话；拉到小时级
+	// 后更接近"一台长时间运行的 CLI"，到期换 UUID 则等价于一次 CLI 重启。
+	maskedSessionTTL = 2 * time.Hour
+	// maskedSessionRefreshTTL：剩余寿命降到这个阈值才 EXPIRE 续期。
+	// 热路径默认只 GET，避免每个 OAuth 请求都 SET 把 2h TTL 重写一遍。
+	maskedSessionRefreshTTL = 30 * time.Minute
 )
 
 // fingerprintKey generates the Redis key for account fingerprint cache.
@@ -72,4 +78,20 @@ func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64)
 func (c *identityCache) SetMaskedSessionID(ctx context.Context, accountID int64, sessionID string) error {
 	key := maskedSessionKey(accountID)
 	return c.rdb.Set(ctx, key, sessionID, maskedSessionTTL).Err()
+}
+
+func (c *identityCache) TouchMaskedSessionID(ctx context.Context, accountID int64) error {
+	key := maskedSessionKey(accountID)
+	ttl, err := c.rdb.TTL(ctx, key).Result()
+	if err != nil {
+		return err
+	}
+	if !shouldRefreshMaskedSession(ttl) {
+		return nil
+	}
+	return c.rdb.Expire(ctx, key, maskedSessionTTL).Err()
+}
+
+func shouldRefreshMaskedSession(remaining time.Duration) bool {
+	return remaining > 0 && remaining <= maskedSessionRefreshTTL
 }

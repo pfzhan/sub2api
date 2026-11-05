@@ -26,6 +26,10 @@ func (s *identityCacheStub) SetMaskedSessionID(_ context.Context, _ int64, sessi
 	return nil
 }
 
+func (s *identityCacheStub) TouchMaskedSessionID(_ context.Context, _ int64) error {
+	return nil
+}
+
 func TestIdentityService_RewriteUserID_PreservesTopLevelFieldOrder(t *testing.T) {
 	cache := &identityCacheStub{}
 	svc := NewIdentityService(cache)
@@ -68,7 +72,7 @@ func TestIdentityService_RewriteUserIDWithMasking_PreservesTopLevelFieldOrder(t 
 		},
 	}
 
-	result, err := svc.RewriteUserIDWithMasking(context.Background(), body, account, "acc-uuid", "client-xyz", "claude-cli/2.1.78 (external, cli)")
+	result, err := svc.RewriteUserIDWithMasking(context.Background(), body, account, 0, "acc-uuid", "client-xyz", "claude-cli/2.1.78 (external, cli)")
 	require.NoError(t, err)
 	resultStr := string(result)
 

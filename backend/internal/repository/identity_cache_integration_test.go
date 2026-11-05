@@ -62,6 +62,31 @@ func (s *IdentityCacheSuite) TestSetFingerprint_Nil() {
 	require.NoError(s.T(), err, "SetFingerprint(nil) should succeed")
 }
 
+func (s *IdentityCacheSuite) TestTouchMaskedSessionID_SkipsWhenTTLHigh() {
+	require.NoError(s.T(), s.cache.SetMaskedSessionID(s.ctx, 7, "sess-high"))
+	key := maskedSessionKey(7)
+	require.NoError(s.T(), s.rdb.Expire(s.ctx, key, maskedSessionTTL).Err())
+
+	require.NoError(s.T(), s.cache.TouchMaskedSessionID(s.ctx, 7))
+	ttl, err := s.rdb.TTL(s.ctx, key).Result()
+	require.NoError(s.T(), err)
+	s.AssertTTLWithin(ttl, 1*time.Second, maskedSessionTTL)
+}
+
+func (s *IdentityCacheSuite) TestTouchMaskedSessionID_RefreshesWhenTTLLow() {
+	require.NoError(s.T(), s.cache.SetMaskedSessionID(s.ctx, 8, "sess-low"))
+	key := maskedSessionKey(8)
+	require.NoError(s.T(), s.rdb.Expire(s.ctx, key, maskedSessionRefreshTTL-time.Minute).Err())
+
+	require.NoError(s.T(), s.cache.TouchMaskedSessionID(s.ctx, 8))
+	ttl, err := s.rdb.TTL(s.ctx, key).Result()
+	require.NoError(s.T(), err)
+	s.AssertTTLWithin(ttl, 1*time.Second, maskedSessionTTL)
+	got, err := s.cache.GetMaskedSessionID(s.ctx, 8)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "sess-low", got)
+}
+
 func TestIdentityCacheSuite(t *testing.T) {
 	suite.Run(t, new(IdentityCacheSuite))
 }

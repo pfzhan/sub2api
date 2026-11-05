@@ -676,6 +676,11 @@ func injectClaudeCodePrompt(body []byte, system any) []byte {
 	return result
 }
 
+// injectedSystemInstructionsPrefix 是 rewriteSystemForNonClaudeCodeWithPromptBlocks
+// 注入到 messages 开头的 system 指令消息前缀。billing 指纹（cc_version fp）必须跳过
+// 该消息、取注入前的第一条真实 user 文本，否则所有带 system 的请求 fp 后缀完全相同。
+const injectedSystemInstructionsPrefix = "[System Instructions]\n"
+
 // rewriteSystemForNonClaudeCode 将非 Claude Code 客户端的 system prompt 迁移至 messages，
 // system 字段仅保留 Claude Code 标识提示词。
 // Anthropic 基于 system 参数内容检测第三方应用，仅前置追加 Claude Code 提示词
@@ -947,7 +952,7 @@ func rewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expa
 	if originalSystemText != "" && originalSystemText != ccPromptTrimmed && !hasClaudeCodePrefix(originalSystemText) {
 		instructionBlock := map[string]any{
 			"type": "text",
-			"text": "[System Instructions]\n" + originalSystemText,
+			"text": injectedSystemInstructionsPrefix + originalSystemText,
 		}
 		if originalSystemCacheControl != nil {
 			instructionBlock["cache_control"] = originalSystemCacheControl

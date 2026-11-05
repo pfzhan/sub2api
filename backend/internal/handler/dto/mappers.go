@@ -311,20 +311,10 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		if mode := a.GetUserMsgQueueMode(); mode != "" {
 			out.UserMsgQueueMode = &mode
 		}
-		// TLS指纹伪装开关
-		if a.IsTLSFingerprintEnabled() {
-			enabled := true
-			out.EnableTLSFingerprint = &enabled
-		}
-		// TLS指纹模板ID
-		if profileID := a.GetTLSFingerprintProfileID(); profileID > 0 {
-			out.TLSFingerprintProfileID = &profileID
-		}
-		// 会话ID伪装开关
-		if a.IsSessionIDMaskingEnabled() {
-			enabled := true
-			out.EnableSessionIDMasking = &enabled
-		}
+		// 会话ID伪装开关：始终写出有效值。omitempty 只跳过 nil，指针 false 会序列化成
+		// false，编辑页才能回显并再次保存显式关闭。
+		enabled := a.IsSessionIDMaskingEnabled()
+		out.EnableSessionIDMasking = &enabled
 		// 缓存 TTL 强制替换
 		if a.IsCacheTTLOverrideEnabled() {
 			enabled := true
@@ -339,6 +329,16 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			if customURL := a.GetCustomBaseURL(); customURL != "" {
 				out.CustomBaseURL = &customURL
 			}
+		}
+	}
+
+	// TLS 指纹：Anthropic OAuth/SetupToken 与 Kiro OAuth 均可 opt-in。
+	// profile_id=-1 表示随机模板，必须写出（>0 会丢掉 -1，编辑页会回退成内置默认）。
+	if a.IsTLSFingerprintEnabled() {
+		enabled := true
+		out.EnableTLSFingerprint = &enabled
+		if profileID := a.GetTLSFingerprintProfileID(); profileID != 0 {
+			out.TLSFingerprintProfileID = &profileID
 		}
 	}
 
