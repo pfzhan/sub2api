@@ -5411,6 +5411,19 @@ function loadTempUnschedRules(credentials?: Record<string, unknown>) {
 }
 
 // Load quota control settings from account (Anthropic OAuth/SetupToken only)
+// 未显式配置时，DTO 的 rpm_sticky_buffer 是后端按并发数和会话数推算的默认值。
+// 回显它会让「打开再保存」把默认值写进 extra，之后改并发数也不再跟着变，
+// 所以只回显 extra 里显式配置的值；拿不到 extra 时沿用 DTO 值。
+function loadExplicitRpmStickyBuffer(account: Account): number | null {
+  const extra = account.extra as Record<string, unknown> | undefined
+  if (!extra) {
+    return account.rpm_sticky_buffer ?? null
+  }
+  const raw = extra.rpm_sticky_buffer
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : null
+}
+
 function loadQuotaControlSettings(account: Account) {
   // Reset all quota control state first
   windowCostEnabled.value = false
@@ -5473,7 +5486,7 @@ function loadQuotaControlSettings(account: Account) {
     rpmLimitEnabled.value = true
     baseRpm.value = account.base_rpm
     rpmStrategy.value = (account.rpm_strategy as 'tiered' | 'sticky_exempt') || 'tiered'
-    rpmStickyBuffer.value = account.rpm_sticky_buffer ?? null
+    rpmStickyBuffer.value = loadExplicitRpmStickyBuffer(account)
   }
 
   // UMQ mode（独立于 RPM 加载，防止编辑无 RPM 账号时丢失已有配置）

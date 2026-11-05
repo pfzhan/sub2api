@@ -2093,3 +2093,140 @@ describe('EditAccountModal temp-unschedulable rule scope', () => {
     wrapper.unmount()
   })
 })
+
+describe('EditAccountModal quota control extra round-trip', () => {
+  function buildAnthropicAccount(type: 'oauth' | 'setup-token', extra: Record<string, unknown>, dto: Record<string, unknown>) {
+    return {
+      id: 41,
+      name: 'Claude',
+      notes: '',
+      platform: 'anthropic',
+      type,
+      credentials: { access_token: 'token' },
+      extra,
+      proxy_id: null,
+      concurrency: 3,
+      priority: 1,
+      rate_multiplier: 1,
+      status: 'active',
+      group_ids: [],
+      expires_at: null,
+      auto_pause_on_expired: false,
+      ...dto
+    } as any
+  }
+
+  async function saveWithNewName(account: any) {
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await wrapper.get('input[data-tour="edit-account-form-name"]').setValue('Claude renamed')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    wrapper.unmount()
+    return payload
+  }
+
+  it.each(['oauth', 'setup-token'] as const)('keeps quota extra keys when only the name changes (%s)', async (type) => {
+    const extra = {
+      window_cost_limit: 50,
+      window_cost_sticky_reserve: 12,
+      max_sessions: 4,
+      session_idle_timeout_minutes: 9,
+      base_rpm: 30,
+      rpm_strategy: 'sticky_exempt',
+      rpm_sticky_buffer: 6,
+      user_msg_queue_mode: 'throttle',
+      unrelated_runtime_key: 'keep-me'
+    }
+    const account = buildAnthropicAccount(type, extra, {
+      window_cost_limit: 50,
+      window_cost_sticky_reserve: 12,
+      max_sessions: 4,
+      session_idle_timeout_minutes: 9,
+      base_rpm: 30,
+      rpm_strategy: 'sticky_exempt',
+      rpm_sticky_buffer: 6,
+      user_msg_queue_mode: 'throttle'
+    })
+
+    const payload = await saveWithNewName(account)
+
+    expect(payload.name).toBe('Claude renamed')
+    expect(payload.extra).toMatchObject(extra)
+  })
+
+  it.each(['oauth', 'setup-token'] as const)('keeps connection and masking extra keys when only the name changes (%s)', async (type) => {
+    const extra = {
+      enable_tls_fingerprint: true,
+      tls_fingerprint_profile_id: -1,
+      session_id_masking_enabled: false,
+      cache_ttl_override_enabled: true,
+      cache_ttl_override_target: '1h',
+      custom_base_url_enabled: true,
+      custom_base_url: 'https://relay.example.com',
+      unrelated_runtime_key: 'keep-me'
+    }
+    const account = buildAnthropicAccount(type, extra, {
+      enable_tls_fingerprint: true,
+      tls_fingerprint_profile_id: -1,
+      session_id_masking_enabled: false,
+      cache_ttl_override_enabled: true,
+      cache_ttl_override_target: '1h',
+      custom_base_url_enabled: true,
+      custom_base_url: 'https://relay.example.com'
+    })
+
+    const payload = await saveWithNewName(account)
+
+    expect(payload.name).toBe('Claude renamed')
+    expect(payload.extra).toMatchObject(extra)
+  })
+
+  it('does not persist the derived rpm_sticky_buffer default when none was configured', async () => {
+    // 后端 DTO 在未配置时返回推算值 concurrency + max_sessions = 3。
+    const account = buildAnthropicAccount('oauth', { base_rpm: 15, rpm_strategy: 'tiered' }, {
+      base_rpm: 15,
+      rpm_strategy: 'tiered',
+      rpm_sticky_buffer: 3
+    })
+
+    const payload = await saveWithNewName(account)
+
+    expect(payload.extra.base_rpm).toBe(15)
+    expect(payload.extra.rpm_strategy).toBe('tiered')
+    expect(payload.extra).not.toHaveProperty('rpm_sticky_buffer')
+  })
+
+  it('keeps extra keys the Kiro form does not show', async () => {
+    const extra = {
+      enable_tls_fingerprint: true,
+      tls_fingerprint_profile_id: 7,
+      max_sessions: 2,
+      base_rpm: 20,
+      kiro_runtime_state: { region: 'us-east-1' }
+    }
+    const account = {
+      ...buildAnthropicAccount('oauth', extra, { enable_tls_fingerprint: true, tls_fingerprint_profile_id: 7 }),
+      platform: 'kiro'
+    }
+
+    const payload = await saveWithNewName(account)
+
+    expect(payload.extra).toMatchObject(extra)
+  })
+
+  it('keeps the random TLS profile (-1) on a Kiro account', async () => {
+    const extra = { enable_tls_fingerprint: true, tls_fingerprint_profile_id: -1 }
+    const account = {
+      ...buildAnthropicAccount('oauth', extra, { enable_tls_fingerprint: true, tls_fingerprint_profile_id: -1 }),
+      platform: 'kiro'
+    }
+
+    const payload = await saveWithNewName(account)
+
+    expect(payload.extra.enable_tls_fingerprint).toBe(true)
+    expect(payload.extra.tls_fingerprint_profile_id).toBe(-1)
+  })
+})

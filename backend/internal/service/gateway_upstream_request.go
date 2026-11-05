@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -1035,17 +1036,24 @@ func buildAnthropicCustomRelayURL(baseURL, path string, account *Account) string
 }
 
 func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
-		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
+	return validateGatewayUpstreamBaseURL(s.cfg, raw)
+}
+
+// validateGatewayUpstreamBaseURL 是 Anthropic 网关转发使用的上游地址校验，
+// 账号保存时也用它校验自定义中继地址，保证能存下的地址运行时同样可用。
+func validateGatewayUpstreamBaseURL(cfg *config.Config, raw string) (string, error) {
+	if cfg == nil || !cfg.Security.URLAllowlist.Enabled {
+		allowInsecureHTTP := cfg != nil && cfg.Security.URLAllowlist.AllowInsecureHTTP
+		normalized, err := urlvalidator.ValidateURLFormat(raw, allowInsecureHTTP)
 		if err != nil {
 			return "", fmt.Errorf("invalid base_url: %w", err)
 		}
 		return normalized, nil
 	}
 	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
-		AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
+		AllowedHosts:     cfg.Security.URLAllowlist.UpstreamHosts,
 		RequireAllowlist: true,
-		AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
+		AllowPrivate:     cfg.Security.URLAllowlist.AllowPrivateHosts,
 	})
 	if err != nil {
 		return "", fmt.Errorf("invalid base_url: %w", err)
