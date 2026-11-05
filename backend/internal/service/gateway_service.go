@@ -1234,8 +1234,8 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 }
 
 func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (string, string, error) {
-	// 对于 Anthropic OAuth 账号，使用 ClaudeTokenProvider 获取缓存的 token
-	if account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth && s.claudeTokenProvider != nil {
+	// Anthropic OAuth 与 setup-token 都使用 ClaudeTokenProvider，临近过期时在请求路径上刷新
+	if account.Platform == PlatformAnthropic && (account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken) && s.claudeTokenProvider != nil {
 		accessToken, err := s.claudeTokenProvider.GetAccessToken(ctx, account)
 		if err != nil {
 			return "", "", err
@@ -1252,7 +1252,7 @@ func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (s
 		return accessToken, "oauth", nil
 	}
 
-	// 其他情况（Gemini 有自己的 TokenProvider，setup-token 类型等）直接从账号读取
+	// 其他情况（Gemini 有自己的 TokenProvider 等）直接从账号读取
 	accessToken := account.GetCredential("access_token")
 	if accessToken == "" {
 		return "", "", errors.New("access_token not found in credentials")

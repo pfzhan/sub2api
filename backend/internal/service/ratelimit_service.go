@@ -529,6 +529,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			if authAccount.IsKiro() {
 				s.markKiroTokenRejected(ctx, authAccount)
 			}
+			if authAccount.Platform == PlatformAnthropic {
+				s.markClaudeTokenRejected(ctx, authAccount)
+			}
 			cooldownMinutes := s.cfg.RateLimit.OAuth401CooldownMinutes
 			if cooldownMinutes <= 0 {
 				cooldownMinutes = 10
@@ -3036,4 +3039,24 @@ func (s *RateLimitService) triggerStreamTimeoutError(ctx context.Context, accoun
 
 	slog.Warn("stream_timeout_account_error", "account_id", account.ID, "model", model)
 	return true
+}
+
+// markClaudeTokenRejected 记录被上游 401 拒绝的 Anthropic OAuth access token，下次取
+// token 时先刷新。与 Kiro 相同：只清缓存不够，token 未到过期时间时冷却结束后仍会复用。
+func (s *RateLimitService) markClaudeTokenRejected(ctx context.Context, account *Account) {
+	token := strings.TrimSpace(account.GetCredential("access_token"))
+	if token == "" {
+		return
+	}
+	updates := map[string]any{claudeRejectedTokenExtraKey: claudeTokenFingerprint(token)}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("oauth_401_force_refresh_mark_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = make(map[string]any, len(updates))
+	}
+	for k, v := range updates {
+		account.Extra[k] = v
+	}
 }

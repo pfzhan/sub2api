@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -350,12 +351,28 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// while the provider call was in flight. Return the durable row so
 			// post-refresh cache publication cannot restore that stale snapshot.
 			freshAccount = durableAccount
-		} else if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
-			slog.Error("oauth_refresh_update_failed",
-				"account_id", freshAccount.ID,
-				"error", updateErr,
-			)
-			return nil, fmt.Errorf("%w: %v", errOAuthRefreshCredentialPersist, updateErr)
+		} else {
+			// freshAccount 是上游调用前读的快照，调用期间其他路径可能已改过凭据。
+			// 写入前重读，只把本次刷新改动的键应用到当前凭据上；重读失败时仍按
+			// 整份写入，因为上游可能已轮换 refresh_token，必须落库。
+			target, persistCredentials := freshAccount, newCredentials
+			if current, readErr := api.accountRepo.GetByID(ctx, freshAccount.ID); readErr == nil && current != nil && current.ID == freshAccount.ID {
+				target = current
+				persistCredentials = applyRefreshedCredentialChanges(current.Credentials, attemptedAccount.Credentials, newCredentials)
+			} else {
+				slog.Warn("oauth_refresh_persist_reread_failed",
+					"account_id", freshAccount.ID,
+					"error", readErr,
+				)
+			}
+			if updateErr := persistAccountCredentials(ctx, api.accountRepo, target, persistCredentials); updateErr != nil {
+				slog.Error("oauth_refresh_update_failed",
+					"account_id", freshAccount.ID,
+					"error", updateErr,
+				)
+				return nil, fmt.Errorf("%w: %v", errOAuthRefreshCredentialPersist, updateErr)
+			}
+			freshAccount = target
 		}
 	}
 
@@ -406,6 +423,27 @@ func (api *OAuthRefreshAPI) loadGrokDurableAccountAfterPersist(parent context.Co
 	}
 
 	return api.accountRepo.GetByID(ctx, accountID)
+}
+
+// applyRefreshedCredentialChanges 把刷新结果相对尝试快照的改动（新增、修改、删除的键）
+// 应用到写入前重读的凭据上。刷新没有改动的键保留当前值，刷新期间其他路径写入的
+// 凭据不会被旧快照覆盖。
+func applyRefreshedCredentialChanges(current, attempted, refreshed map[string]any) map[string]any {
+	merged := make(map[string]any, len(current)+len(refreshed))
+	for k, v := range current {
+		merged[k] = v
+	}
+	for k, v := range refreshed {
+		if old, ok := attempted[k]; !ok || !reflect.DeepEqual(old, v) {
+			merged[k] = v
+		}
+	}
+	for k := range attempted {
+		if _, ok := refreshed[k]; !ok {
+			delete(merged, k)
+		}
+	}
+	return merged
 }
 
 // isInvalidGrantError 检查错误是否为 invalid_grant

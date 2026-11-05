@@ -48,8 +48,11 @@ func (r *ClaudeTokenRefresher) CanRefresh(account *Account) bool {
 }
 
 // NeedsRefresh 检查token是否需要刷新
-// 基于 expires_at 字段判断是否在刷新窗口内
+// 基于 expires_at 字段判断是否在刷新窗口内；当前 token 已被上游 401 拒绝时也需要刷新
 func (r *ClaudeTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
+	if claudeTokenRejected(account) {
+		return true
+	}
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
 		return false

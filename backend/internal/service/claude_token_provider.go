@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"strings"
@@ -12,7 +14,24 @@ const (
 	claudeTokenRefreshSkew = 3 * time.Minute
 	claudeTokenCacheSkew   = 5 * time.Minute
 	claudeLockWaitTime     = 200 * time.Millisecond
+
+	// claudeRejectedTokenExtraKey 记录被上游 401 拒绝的 access token 指纹。当前 token
+	// 与指纹一致时必须先刷新；刷新换了新 token 后指纹自然失效，不需要清除。
+	claudeRejectedTokenExtraKey = "claude_rejected_token_hash"
 )
+
+// claudeTokenFingerprint 返回 access token 的短指纹，避免把 token 明文写进 extra。
+func claudeTokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:8])
+}
+
+// claudeTokenRejected 报告账号当前的 access token 是否已被上游拒绝。
+func claudeTokenRejected(account *Account) bool {
+	token := strings.TrimSpace(account.GetCredential("access_token"))
+	marker := account.getExtraString(claudeRejectedTokenExtraKey)
+	return token != "" && marker != "" && marker == claudeTokenFingerprint(token)
+}
 
 // ClaudeTokenCache token cache interface.
 type ClaudeTokenCache = GeminiTokenCache
@@ -56,18 +75,23 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	if account == nil {
 		return "", errors.New("account is nil")
 	}
-	if account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeServiceAccount) {
+	if account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken && account.Type != AccountTypeServiceAccount) {
 		return "", errors.New("not an anthropic oauth or service account")
 	}
 	if account.Type == AccountTypeServiceAccount {
 		return p.getServiceAccountAccessToken(ctx, account)
 	}
+	if account.Type == AccountTypeSetupToken {
+		return p.getSetupTokenAccessToken(ctx, account)
+	}
 
 	cacheKey := ClaudeTokenCacheKey(account)
 
-	// 1) Try cache first.
+	// 1) Try cache first. A cached token that upstream already rejected is a miss.
+	rejectedMarker := account.getExtraString(claudeRejectedTokenExtraKey)
 	if p.tokenCache != nil {
-		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
+		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" &&
+			(rejectedMarker == "" || claudeTokenFingerprint(token) != rejectedMarker) {
 			slog.Debug("claude_token_cache_hit", "account_id", account.ID)
 			return token, nil
 		} else if err != nil {
@@ -77,9 +101,9 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 	slog.Debug("claude_token_cache_miss", "account_id", account.ID)
 
-	// 2) Refresh if needed (pre-expiry skew).
+	// 2) Refresh if needed (pre-expiry skew, or the current token was rejected by upstream).
 	expiresAt := account.GetCredentialAsTime("expires_at")
-	needsRefresh := expiresAt == nil || time.Until(*expiresAt) <= claudeTokenRefreshSkew
+	needsRefresh := expiresAt == nil || time.Until(*expiresAt) <= claudeTokenRefreshSkew || claudeTokenRejected(account)
 	refreshFailed := false
 
 	if needsRefresh && p.refreshAPI != nil && p.executor != nil {
@@ -158,6 +182,39 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		}
 	}
 
+	return accessToken, nil
+}
+
+// getSetupTokenAccessToken 在 setup-token 临近过期时走与 oauth 相同的刷新入口。
+// setup-token 不写 token 缓存：缓存失效只覆盖 oauth 类型，后台改凭据后这里仍需读到库内的值。
+// 没有 expires_at 的 setup-token 视为不过期，直接返回库内 token。
+func (p *ClaudeTokenProvider) getSetupTokenAccessToken(ctx context.Context, account *Account) (string, error) {
+	expiresAt := account.GetCredentialAsTime("expires_at")
+	if expiresAt != nil && time.Until(*expiresAt) <= claudeTokenRefreshSkew && p.refreshAPI != nil && p.executor != nil {
+		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, claudeTokenRefreshSkew)
+		switch {
+		case err != nil:
+			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
+				return "", err
+			}
+			slog.Warn("claude_setup_token_refresh_failed", "account_id", account.ID, "error", err)
+		case result.LockHeld:
+			// 其他 worker 正在刷新，稍等后从库里取它写入的新 token。
+			if p.accountRepo != nil {
+				time.Sleep(claudeLockWaitTime)
+				if latest, getErr := p.accountRepo.GetByID(ctx, account.ID); getErr == nil && latest != nil {
+					account = latest
+				}
+			}
+		case result.Account != nil:
+			account = result.Account
+		}
+	}
+
+	accessToken := account.GetCredential("access_token")
+	if strings.TrimSpace(accessToken) == "" {
+		return "", errors.New("access_token not found in credentials")
+	}
 	return accessToken, nil
 }
 
