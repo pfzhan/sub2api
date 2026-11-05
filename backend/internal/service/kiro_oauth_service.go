@@ -121,6 +121,7 @@ func (s *KiroOAuthService) ImportCredentials(ctx context.Context, input KiroImpo
 	if err != nil {
 		return nil, infraerrors.BadRequest("KIRO_IMPORT_REFRESH_FAILED", "kiro token refresh failed: "+err.Error())
 	}
+	refreshed.EnsureMachineID()
 	return refreshed.ToMap(), nil
 }
 
@@ -142,6 +143,8 @@ func (s *KiroOAuthService) RefreshAccountToken(ctx context.Context, account *Acc
 
 // refresh 刷新 token，并为没有 profile 的 idc 凭据查询 profile。查询失败不影响
 // 刷新结果，没有 profile 的 Builder ID 凭据仍可走 codewhisperer 端点。
+// 刷新不补 machine_id：已有账号由 persistKiroMachineID 用 MergeCredentialIfAbsent
+// 补写；在刷新里生成会盖掉并发补写的值。
 func (s *KiroOAuthService) refresh(ctx context.Context, doer kiro.Doer, creds kiro.Credentials) (kiro.Credentials, error) {
 	refreshed, err := kiro.Refresh(ctx, doer, creds)
 	if err != nil {

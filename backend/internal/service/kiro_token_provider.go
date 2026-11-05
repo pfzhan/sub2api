@@ -9,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/google/uuid"
 )
 
 const (
@@ -112,6 +115,7 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 	if account == nil || account.Platform != PlatformKiro || account.Type != AccountTypeOAuth {
 		return "", account, errors.New("not a kiro oauth account")
 	}
+	p.persistKiroMachineID(ctx, account)
 	cacheKey := KiroTokenCacheKey(account)
 	if p.tokenCache != nil {
 		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
@@ -157,6 +161,74 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 		}
 	}
 	return token, account, nil
+}
+
+// persistKiroMachineID 给还没有稳定设备标识的 social 账号补 machine_id。
+// IdC 用 ClientID 派生，不写此字段。只合并 machine_id，避免把请求快照里的
+// 旧 refresh_token 写回覆盖刚轮换的值。失败只打日志，不阻断本次请求。
+func (p *KiroTokenProvider) persistKiroMachineID(ctx context.Context, account *Account) {
+	if p == nil || account == nil {
+		return
+	}
+	if machineID := strings.TrimSpace(account.GetCredential(kiro.CredMachineID)); machineID != "" {
+		return
+	}
+	if strings.TrimSpace(account.GetCredential(kiro.CredClientID)) != "" {
+		return
+	}
+	if p.accountRepo == nil {
+		return
+	}
+
+	fresh, err := p.accountRepo.GetByID(ctx, account.ID)
+	if err != nil {
+		slog.Warn("kiro_machine_id_persist_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	if fresh != nil {
+		if machineID := strings.TrimSpace(fresh.GetCredential(kiro.CredMachineID)); machineID != "" {
+			setAccountCredential(account, kiro.CredMachineID, machineID)
+			return
+		}
+		if strings.TrimSpace(fresh.GetCredential(kiro.CredClientID)) != "" {
+			return
+		}
+	}
+
+	machineID := uuid.NewString()
+	if merger, ok := any(p.accountRepo).(accountCredentialKeyMerger); ok {
+		stored, mergeErr := merger.MergeCredentialIfAbsent(ctx, account.ID, kiro.CredMachineID, machineID)
+		if mergeErr != nil {
+			slog.Warn("kiro_machine_id_persist_failed", "account_id", account.ID, "error", mergeErr)
+			return
+		}
+		if strings.TrimSpace(stored) != "" {
+			machineID = stored
+		}
+		setAccountCredential(account, kiro.CredMachineID, machineID)
+		return
+	}
+
+	target := account
+	if fresh != nil {
+		target = fresh
+	}
+	merged := MergeCredentials(target.Credentials, map[string]any{kiro.CredMachineID: machineID})
+	if persistErr := persistAccountCredentials(ctx, p.accountRepo, target, merged); persistErr != nil {
+		slog.Warn("kiro_machine_id_persist_failed", "account_id", account.ID, "error", persistErr)
+		return
+	}
+	setAccountCredential(account, kiro.CredMachineID, machineID)
+}
+
+func setAccountCredential(account *Account, key, value string) {
+	if account == nil {
+		return
+	}
+	if account.Credentials == nil {
+		account.Credentials = map[string]any{}
+	}
+	account.Credentials[key] = value
 }
 
 // waitForConcurrentRefresh 在刷新锁被其他 worker 持有时等待对方刷新完成。

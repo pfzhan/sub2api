@@ -163,6 +163,28 @@ func TestGatewayService_ForwardKiroStream(t *testing.T) {
 	require.NotNil(t, result.FirstTokenMs)
 }
 
+func TestGatewayService_ForwardKiroStreamErrorAfterOutputKeepsUsage(t *testing.T) {
+	upstream := &kiroHTTPUpstreamStub{resp: kiroEventStreamResponse(
+		kiroEventFrame("assistantResponseEvent", `{"content":"Hello"}`),
+		kiroExceptionFrame("InternalServerException", `{"message":"boom"}`),
+	)}
+	svc := newKiroGatewayForTest(upstream, &rateLimitAccountRepoStub{})
+
+	result, rec, err := forwardKiroForTest(t, svc,
+		`{"model":"claude-sonnet-4-5","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "客户端已收到内容，不能换账号")
+
+	out := rec.Body.String()
+	require.Contains(t, out, `"text":"Hello"`)
+	require.Contains(t, out, "event: error")
+
+	require.NotNil(t, result, "已产出的内容随错误一起计费")
+	require.Positive(t, result.Usage.OutputTokens)
+	require.Positive(t, result.Usage.InputTokens)
+}
+
 func TestGatewayService_ForwardKiroNonStream(t *testing.T) {
 	upstream := &kiroHTTPUpstreamStub{resp: kiroEventStreamResponse(
 		kiroEventFrame("assistantResponseEvent", `{"content":"Hello"}`),
@@ -206,6 +228,38 @@ func TestGatewayService_ForwardKiroQuotaExhaustedFailsOver(t *testing.T) {
 	require.Equal(t, http.StatusPaymentRequired, failover.StatusCode)
 	require.Equal(t, "error", gjson.GetBytes(failover.ResponseBody, "type").String())
 	require.Equal(t, 1, repo.rateLimitedCalls)
+}
+
+func TestSanitizeKiroClientErrorMessage(t *testing.T) {
+	t.Parallel()
+	arn := "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
+	got := sanitizeKiroClientErrorMessage("Resource " + arn + " is invalid")
+	require.Equal(t, "Resource arn:aws:*** is invalid", got)
+	require.NotContains(t, got, "699475941385")
+	require.NotContains(t, got, "EHGA3GRVQMUK")
+
+	plain := sanitizeKiroClientErrorMessage("Input is too long.")
+	require.Equal(t, "Input is too long.", plain)
+
+	prefixed := sanitizeKiroClientErrorMessage("prompt is too long: Resource " + arn)
+	require.True(t, strings.HasPrefix(prefixed, "prompt is too long:"))
+	require.NotContains(t, prefixed, arn)
+}
+
+func TestGatewayService_ForwardKiroClientErrorRedactsARN(t *testing.T) {
+	arn := "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
+	upstream := &kiroHTTPUpstreamStub{resp: kiroJSONResponse(http.StatusBadRequest,
+		`{"message":"Validation failed for `+arn+`"}`)}
+	svc := newKiroGatewayForTest(upstream, &rateLimitAccountRepoStub{})
+
+	_, rec, err := forwardKiroForTest(t, svc,
+		`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	msg := gjson.Get(rec.Body.String(), "error.message").String()
+	require.Contains(t, msg, "Validation failed")
+	require.NotContains(t, rec.Body.String(), arn)
+	require.NotContains(t, rec.Body.String(), "699475941385")
 }
 
 func TestGatewayService_ForwardKiroContextLimitReturnsPromptTooLong(t *testing.T) {
@@ -278,4 +332,44 @@ func TestGatewayService_ForwardKiroReportsPromptCache(t *testing.T) {
 		first.Usage.InputTokens+first.Usage.CacheCreationInputTokens,
 		second.Usage.InputTokens+second.Usage.CacheReadInputTokens,
 		"两次请求的输入总量相同，只是拆分不同")
+}
+
+func TestKiroStableConversationID(t *testing.T) {
+	t.Parallel()
+	scA := &SessionContext{ClientIP: "1.1.1.1", UserAgent: "ua", APIKeyID: 10}
+	scB := &SessionContext{ClientIP: "1.1.1.1", UserAgent: "ua", APIKeyID: 20}
+	hi := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	hiTurn2 := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"yo"},{"role":"user","content":"more"}]}`)
+
+	require.Equal(t, kiroStableConversationID(1, scA, hi), kiroStableConversationID(1, scA, hiTurn2),
+		"later turns must not change conversationId")
+	require.NotEqual(t, kiroStableConversationID(1, scA, hi), kiroStableConversationID(1, scB, hi),
+		"different API keys must not share conversationId")
+
+	imageA := []byte(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aaa"}}]}]}`)
+	imageB := []byte(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"bbb"}}]}]}`)
+	require.NotEqual(t, kiroStableConversationID(1, scA, imageA), kiroStableConversationID(1, scA, imageB),
+		"image-only first users must be distinguished")
+	require.NotEqual(t, kiroStableConversationID(1, scA, imageA), kiroStableConversationID(1, scA, []byte(`{"messages":[]}`)),
+		"empty first user must not collide with an image-only session")
+
+	meta := []byte(`{"metadata":{"user_id":"user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000"},"messages":[{"role":"user","content":"hi"}]}`)
+	metaOtherText := []byte(`{"metadata":{"user_id":"user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000"},"messages":[{"role":"user","content":"other"}]}`)
+	require.Equal(t, kiroStableConversationID(1, scA, meta), kiroStableConversationID(1, scA, metaOtherText),
+		"metadata session_id is the conversation anchor")
+}
+
+func TestKiroCompatSessionContextIncludesAPIKeyID(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Request.Header.Set("User-Agent", "compat-ua")
+	c.Set("api_key", &APIKey{ID: 77})
+
+	sc := kiroCompatSessionContext(c)
+	require.NotNil(t, sc)
+	require.Equal(t, int64(77), sc.APIKeyID)
+	require.Equal(t, "compat-ua", sc.UserAgent)
 }

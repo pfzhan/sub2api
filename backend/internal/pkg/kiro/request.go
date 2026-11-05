@@ -20,10 +20,16 @@ const (
 	generateCodeWhispererURLTemplate = "https://codewhisperer.%s.amazonaws.com/generateAssistantResponse"
 	generateTarget                   = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
 
-	// 生成接口按 Amazon Q CLI 的 SDK 标识发送；profile 查询与用量查询按 Kiro IDE 发送。
-	cliAmzUserAgent = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17593 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI"
-	cliUserAgent    = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17593 os/linux lang/rust/1.92.0 md/appVersion-2.10.0 app/AmazonQ-For-CLI"
-	ideVersion      = "0.11.63"
+	// 所有出口（生成 / profile 查询 / 用量查询）统一使用 Kiro IDE 的 SDK 标识。
+	// 同一凭据上混用 Amazon Q CLI 与 Kiro IDE 两套产品身份是明显的客户端形态矛盾；
+	// 请求体的 origin=AI_EDITOR / agentTaskType=vibe 也是 IDE 语义。
+	ideVersion = "0.11.63"
+
+	// AWS SDK JS 在 User-Agent 里声明调用的 API 名。生成走 Streaming 服务，
+	// ListProfiles / usage 走 JSON 控制面。取值来自 AIClient2API 的 Kiro IDE
+	// 流量，官方抓包到位后再校正。
+	sdkAPICodeWhisperer          = "api/codewhisperer#1.0.34"
+	sdkAPICodeWhispererStreaming = "api/codewhispererstreaming#1.0.34"
 
 	originAIEditor    = "AI_EDITOR"
 	chatTriggerManual = "MANUAL"
@@ -66,28 +72,43 @@ func NewGenerateRequest(ctx context.Context, creds Credentials, body []byte) (*h
 	if err != nil {
 		return nil, err
 	}
+	// 生成走 Streaming SDK 标识 + eventstream Accept；ListProfiles / usage
+	// 仍用 ideHeaders（api/codewhisperer）和 JSON Accept。machineID 两边同一套。
+	req.Header = ideStreamingHeaders(creds)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-	req.Header.Set("amz-sdk-invocation-id", uuid.NewString())
-	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 	req.Header.Set("x-amz-target", generateTarget)
-	req.Header.Set("x-amz-user-agent", cliAmzUserAgent)
-	req.Header.Set("User-Agent", cliUserAgent)
 	return req, nil
 }
 
-// ideHeaders 返回 Kiro IDE 风格的 SDK 请求头。
+// ideHeaders 返回 ListProfiles / usage 用的 Kiro IDE JSON 控制面请求头。
 func ideHeaders(creds Credentials) http.Header {
-	key := firstNonEmpty(creds.ProfileARN, creds.ClientID, "KIRO_DEFAULT_MACHINE")
-	sum := sha256.Sum256([]byte(key))
+	return ideSDKHeaders(creds, sdkAPICodeWhisperer)
+}
+
+// ideStreamingHeaders 返回 generateAssistantResponse 用的 Streaming SDK 请求头。
+func ideStreamingHeaders(creds Credentials) http.Header {
+	return ideSDKHeaders(creds, sdkAPICodeWhispererStreaming)
+}
+
+func ideSDKHeaders(creds Credentials, api string) http.Header {
+	sum := sha256.Sum256([]byte(machineIDSeed(creds)))
 	machineID := hex.EncodeToString(sum[:])
+	version := IDEVersion()
+	kiroTag := "KiroIDE-" + version + "-" + machineID
 	h := http.Header{}
 	h.Set("amz-sdk-invocation-id", uuid.NewString())
 	h.Set("amz-sdk-request", "attempt=1; max=1")
-	h.Set("x-amz-user-agent", "aws-sdk-js/1.0.34 KiroIDE-"+ideVersion+"-"+machineID)
-	h.Set("User-Agent", "aws-sdk-js/1.0.34 ua/2.1 os/linux lang/js md/nodejs#20.18.0 api/codewhisperer#1.0.34 m/E KiroIDE-"+ideVersion+"-"+machineID)
+	h.Set("x-amz-user-agent", "aws-sdk-js/1.0.34 "+kiroTag)
+	h.Set("User-Agent", "aws-sdk-js/1.0.34 ua/2.1 os/linux lang/js md/nodejs#20.18.0 "+api+" m/E "+kiroTag)
 	return h
+}
+
+// machineIDSeed 选择按凭据稳定、且不在多账号间共享的设备标识。
+// 所有 social 账号共用同一个 Kiro profileArn，不能拿它当 machineID。
+func machineIDSeed(creds Credentials) string {
+	return firstNonEmpty(creds.MachineID, creds.ClientID, "KIRO_DEFAULT_MACHINE")
 }
 
 // BuildOptions 控制请求转换。

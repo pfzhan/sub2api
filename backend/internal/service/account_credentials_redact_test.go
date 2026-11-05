@@ -88,3 +88,22 @@ func TestIsSensitiveCredentialKey(t *testing.T) {
 	require.False(t, IsSensitiveCredentialKey(""))
 	require.False(t, IsSensitiveCredentialKey("model_mapping"))
 }
+
+func TestMergePreservingSensitiveCreds_KeepsKiroClientSecretOnEditSave(t *testing.T) {
+	existing := map[string]any{
+		"auth_method":   "idc",
+		"client_id":     "client-id",
+		"client_secret": "client-secret-value",
+		"refresh_token": "refresh-token-value",
+	}
+	// 编辑弹窗拿到的是脱敏后的 credentials，保存时不带 client_secret。
+	incoming := map[string]any{
+		"auth_method": "idc",
+		"client_id":   "client-id",
+		"region":      "us-east-1",
+	}
+	out := MergePreservingSensitiveCreds(existing, incoming)
+	require.Equal(t, "client-secret-value", out["client_secret"])
+	require.Equal(t, "refresh-token-value", out["refresh_token"])
+	require.Equal(t, "us-east-1", out["region"])
+}

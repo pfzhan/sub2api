@@ -87,7 +87,7 @@ func TestRedactCredentials_AllKnownSensitiveKeys(t *testing.T) {
 		"api_key", "session_key", "cookie",
 		"aws_secret_access_key", "aws_session_token",
 		"service_account_json", "service_account", "private_key",
-		"agent_private_key",
+		"agent_private_key", "client_secret",
 	}
 	in := make(map[string]any, len(keys))
 	for _, k := range keys {
@@ -98,4 +98,19 @@ func TestRedactCredentials_AllKnownSensitiveKeys(t *testing.T) {
 	for _, k := range keys {
 		require.True(t, status["has_"+k], "key %s 应在 status 中标记为已配置", k)
 	}
+}
+
+func TestRedactCredentials_KiroIdCStripsClientSecret(t *testing.T) {
+	in := map[string]any{
+		"auth_method":   "idc",
+		"client_id":     "client-id",
+		"client_secret": "client-secret-value",
+		"refresh_token": "refresh-token-value",
+		"region":        "us-east-1",
+	}
+	out, status := RedactCredentials(in)
+	require.NotContains(t, out, "client_secret")
+	require.True(t, status["has_client_secret"])
+	require.Equal(t, "client-id", out["client_id"])
+	require.Equal(t, "idc", out["auth_method"])
 }

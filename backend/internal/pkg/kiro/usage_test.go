@@ -62,7 +62,10 @@ func TestGetUsageLimits(t *testing.T) {
 		"profileArn":      {"arn:aws:codewhisperer:us-east-1:1:profile/p"},
 	}, got.URL.Query())
 	require.Equal(t, "Bearer at", got.Header.Get("Authorization"))
+	require.Equal(t, "application/json", got.Header.Get("Accept"))
 	require.Contains(t, got.Header.Get("User-Agent"), "KiroIDE-")
+	require.Contains(t, got.Header.Get("User-Agent"), "api/codewhisperer#1.0.34")
+	require.NotContains(t, got.Header.Get("User-Agent"), "codewhispererstreaming")
 
 	require.Equal(t, "KIRO PRO", limits.SubscriptionTitle)
 	require.Equal(t, "dev@example.com", limits.Email)

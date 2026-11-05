@@ -16,6 +16,8 @@ type modelSpec struct {
 	EffortLevels []string
 	// EffortField 区分 effort 的写法：Claude 写在 output_config，GPT 写在 reasoning。
 	EffortField effortField
+	// MinCacheTokens 是最小可缓存长度，为 0 时按 defaultMinCacheTokens 计。
+	MinCacheTokens int
 }
 
 type effortField int
@@ -26,7 +28,12 @@ const (
 	effortFieldReasoning
 )
 
-const defaultContextWindow = 200_000
+const (
+	defaultContextWindow = 200_000
+	// defaultMinCacheTokens 用于表中没有标出最小可缓存长度的模型，也是 GPT 自动
+	// 缓存的最小长度。
+	defaultMinCacheTokens = 1024
+)
 
 var (
 	claudeEffortFull    = []string{"low", "medium", "high", "xhigh", "max"}
@@ -37,17 +44,17 @@ var (
 // models 以客户端模型名为键。键使用 Anthropic 的连字符写法，
 // 查找前会把点号写法和日期后缀归一化。
 var models = map[string]modelSpec{
-	"claude-opus-5-5":   {UpstreamID: "claude-opus-5.5", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig},
-	"claude-sonnet-5-5": {UpstreamID: "claude-sonnet-5.5", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig},
-	"claude-opus-5":     {UpstreamID: "claude-opus-5", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig},
+	"claude-opus-5-5":   {UpstreamID: "claude-opus-5.5", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig, MinCacheTokens: 512},
+	"claude-sonnet-5-5": {UpstreamID: "claude-sonnet-5.5", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig, MinCacheTokens: 512},
+	"claude-opus-5":     {UpstreamID: "claude-opus-5", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig, MinCacheTokens: 512},
 	"claude-sonnet-5":   {UpstreamID: "claude-sonnet-5", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig},
 	"claude-opus-4-8":   {UpstreamID: "claude-opus-4.8", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig},
-	"claude-opus-4-7":   {UpstreamID: "claude-opus-4.7", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig},
-	"claude-opus-4-6":   {UpstreamID: "claude-opus-4.6", ContextWindow: 1_000_000, EffortLevels: claudeEffortNoXHigh, EffortField: effortFieldOutputConfig},
-	"claude-opus-4-5":   {UpstreamID: "claude-opus-4.5", ContextWindow: 1_000_000},
+	"claude-opus-4-7":   {UpstreamID: "claude-opus-4.7", ContextWindow: 1_000_000, EffortLevels: claudeEffortFull, EffortField: effortFieldOutputConfig, MinCacheTokens: 2048},
+	"claude-opus-4-6":   {UpstreamID: "claude-opus-4.6", ContextWindow: 1_000_000, EffortLevels: claudeEffortNoXHigh, EffortField: effortFieldOutputConfig, MinCacheTokens: 4096},
+	"claude-opus-4-5":   {UpstreamID: "claude-opus-4.5", ContextWindow: 1_000_000, MinCacheTokens: 4096},
 	"claude-sonnet-4-6": {UpstreamID: "claude-sonnet-4.6", ContextWindow: 200_000, EffortLevels: claudeEffortNoXHigh, EffortField: effortFieldOutputConfig},
 	"claude-sonnet-4-5": {UpstreamID: "claude-sonnet-4.5", ContextWindow: 200_000},
-	"claude-haiku-4-5":  {UpstreamID: "claude-haiku-4.5", ContextWindow: 200_000},
+	"claude-haiku-4-5":  {UpstreamID: "claude-haiku-4.5", ContextWindow: 200_000, MinCacheTokens: 4096},
 	"gpt-5.6-sol":       {UpstreamID: "gpt-5.6-sol", ContextWindow: 1_000_000, EffortLevels: gptEffortLevels, EffortField: effortFieldReasoning},
 	"gpt-5.6-terra":     {UpstreamID: "gpt-5.6-terra", ContextWindow: 1_000_000, EffortLevels: gptEffortLevels, EffortField: effortFieldReasoning},
 	"gpt-5.6-luna":      {UpstreamID: "gpt-5.6-luna", ContextWindow: 1_000_000, EffortLevels: gptEffortLevels, EffortField: effortFieldReasoning},
@@ -116,6 +123,15 @@ func ContextWindow(model string) int {
 		return models[id].ContextWindow
 	}
 	return defaultContextWindow
+}
+
+// MinCacheTokens 返回模型的最小可缓存长度（token），前缀短于它时 Anthropic 不
+// 缓存。数值取自 Anthropic prompt caching 文档。
+func MinCacheTokens(model string) int {
+	if id := canonicalModel(model); id != "" && models[id].MinCacheTokens > 0 {
+		return models[id].MinCacheTokens
+	}
+	return defaultMinCacheTokens
 }
 
 // DefaultModelIDs 返回对客户端展示的模型列表（按名称排序）。

@@ -91,7 +91,10 @@ func TestDiscoverProfileARNPrefersRegion(t *testing.T) {
 	require.Equal(t, "arn:aws:codewhisperer:us-east-1:1:profile/B", arn)
 	require.Equal(t, "https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles", calls[0].URL)
 	require.Equal(t, "Bearer at", calls[0].Header.Get("Authorization"))
+	require.Equal(t, "application/json", calls[0].Header.Get("Accept"))
 	require.Contains(t, calls[0].Header.Get("x-amz-user-agent"), "KiroIDE-")
+	require.Contains(t, calls[0].Header.Get("User-Agent"), "api/codewhisperer#1.0.34")
+	require.NotContains(t, calls[0].Header.Get("User-Agent"), "codewhispererstreaming")
 	require.Equal(t, float64(10), calls[0].Body["maxResults"])
 }
 

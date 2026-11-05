@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -22,15 +24,43 @@ const (
 	kiroEmptyResponseReason         = GatewayFailureReason("kiro_empty_response")
 )
 
+// kiroAWSARNPattern 匹配 AWS ARN（含账号 ID 与 profile 资源）。Kiro 400 文案偶尔
+// 会带 profileArn，不能原样回给 API 用户。
+var kiroAWSARNPattern = regexp.MustCompile(`(?i)arn:aws[a-z0-9-]*:[a-z0-9-]+:[^:\s]*:[^:\s]*:[^\s"'\\,<>]+`)
+
 // SetKiroTokenProvider 注入 Kiro 账号的 token 提供者。未注入时 Kiro 账号请求直接失败。
 func (s *GatewayService) SetKiroTokenProvider(p *KiroTokenProvider) {
 	s.kiroTokenProvider = p
 }
 
+// kiroStableConversationID 为 Kiro 请求派生会话级稳定的 conversationId。
+// 官方 IDE 在同一会话内复用 conversationId；每请求新建会让同一 token 上出现大量
+// “新对话”、没有续聊，是比换号更明显的脚本信号。种子 = 账号 + 客户端区分因子 +
+// 会话锚点；failover 换号后账号 ID 变化，自然得到新 conversationId。
+func kiroStableConversationID(accountID int64, sc *SessionContext, claudeBody []byte) string {
+	seed := buildStableSessionSeed(accountID, sessionContextDiscriminator(sc), kiroConversationAnchor(claudeBody))
+	return generateSessionUUID(seed)
+}
+
+// kiroConversationAnchor 取会话内稳定、且不随后续轮次增长的锚点。
+// 优先用 metadata.user_id 里的 session_id；否则用首条 user 文本；没有文本时
+// （图文/空内容）用规范化后的首条 user JSON，避免并行空会话撞 conversationId。
+func kiroConversationAnchor(claudeBody []byte) string {
+	if uid := ParseMetadataUserID(gjson.GetBytes(claudeBody, "metadata.user_id").String()); uid != nil && uid.SessionID != "" {
+		return "session:" + uid.SessionID
+	}
+	if text := extractFirstUserText(claudeBody); text != "" {
+		return text
+	}
+	var b strings.Builder
+	appendFirstUserMessageFromRaw(&b, []byte(gjson.GetBytes(claudeBody, "messages").Raw))
+	return b.String()
+}
+
 // forwardKiro 把 Anthropic Messages 请求转换为 Kiro generateAssistantResponse，
 // 再把 Kiro 的 event stream 转换回 Anthropic 响应。
 func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest, startTime time.Time) (*ForwardResult, error) {
-	up, err := s.openKiroUpstream(ctx, c, account, parsed.Model, parsed.Body.Bytes(), nil)
+	up, err := s.openKiroUpstream(ctx, c, account, parsed.Model, parsed.Body.Bytes(), parsed.SessionContext, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -40,10 +70,11 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 	}
 
 	outcome, err := s.relayKiroResponse(ctx, c, up.account, up.resp, up.conv, parsed.Stream, startTime, up.mappedModel)
-	if err != nil {
+	if outcome == nil {
 		return nil, err
 	}
 
+	// 客户端已收到内容后流中断时，err 不为空，已产出的内容仍随错误一起计费（#5148）。
 	usage := up.conv.Usage()
 	return &ForwardResult{
 		RequestID:       up.requestID,
@@ -62,7 +93,7 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     outcome.firstTokenMs,
 		ClientDisconnect: outcome.clientDisconnect,
-	}, nil
+	}, err
 }
 
 // kiroErrorWriter 按入站协议的格式向客户端写错误。
@@ -81,7 +112,10 @@ type kiroUpstream struct {
 // openKiroUpstream 取 token、把 Anthropic Messages 请求体转换为 Kiro 请求并发送。
 // 需要换账号的错误返回 UpstreamFailoverError；其余错误先写给客户端再返回
 // error。writeErr 为 nil 时按 Anthropic 格式处理，并走通用的错误透传规则。
-func (s *GatewayService) openKiroUpstream(ctx context.Context, c *gin.Context, account *Account, reqModel string, claudeBody []byte, writeErr kiroErrorWriter) (*kiroUpstream, error) {
+//
+// sessionCtx 用于派生会话级稳定的 conversationId（见 kiroStableConversationID），
+// 可为 nil。
+func (s *GatewayService) openKiroUpstream(ctx context.Context, c *gin.Context, account *Account, reqModel string, claudeBody []byte, sessionCtx *SessionContext, writeErr kiroErrorWriter) (*kiroUpstream, error) {
 	mappedModel := account.GetMappedModel(reqModel)
 	if s.kiroTokenProvider == nil {
 		return nil, errors.New("kiro token provider is not configured")
@@ -94,8 +128,9 @@ func (s *GatewayService) openKiroUpstream(ctx context.Context, c *gin.Context, a
 	creds.AccessToken = token
 
 	built, err := kiro.BuildRequest(claudeBody, kiro.BuildOptions{
-		Model:      mappedModel,
-		ProfileARN: creds.ProfileARN,
+		Model:          mappedModel,
+		ProfileARN:     creds.ProfileARN,
+		ConversationID: kiroStableConversationID(account.ID, sessionCtx, claudeBody),
 	})
 	if err != nil {
 		if writeErr == nil {
@@ -113,7 +148,9 @@ func (s *GatewayService) openKiroUpstream(ctx context.Context, c *gin.Context, a
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	// 与 Anthropic 主路径一致：按账号绑定 TLS 指纹 profile。Kiro 出口若用 Go 默认
+	// JA3，与请求头声称的 IDE/Node 形态矛盾。
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -186,7 +223,8 @@ func (s *GatewayService) kiroCredentialFailure(ctx context.Context, c *gin.Conte
 
 // handleKiroErrorResponse 处理非 2xx 响应。Kiro 的错误体先转换为 Anthropic
 // 错误格式，再交给通用的错误处理流程，账号状态按原始错误体判断。writeErr
-// 不为 nil 时，不需要换账号的错误按调用方的格式直接写给客户端。
+// 不为 nil 时，不需要换账号的错误按调用方的格式写给客户端，但仍走 sanitize、
+// 透传规则，以及与 handleErrorResponse 相同的 400 / 泛化文案策略。
 func (s *GatewayService) handleKiroErrorResponse(ctx context.Context, c *gin.Context, account *Account, resp *http.Response, modelKey string, writeErr kiroErrorWriter) error {
 	raw, _ := s.readUpstreamErrorBody(resp)
 	status := kiro.NormalizeStatus(resp.StatusCode, raw)
@@ -199,7 +237,8 @@ func (s *GatewayService) handleKiroErrorResponse(ctx context.Context, c *gin.Con
 		// Claude Code 依据 "prompt is too long" 触发上下文压缩。
 		message = "prompt is too long: " + message
 	}
-	converted := anthropicErrorBody(status, message)
+	clientMessage := sanitizeKiroClientErrorMessage(message)
+	converted := anthropicErrorBody(status, clientMessage)
 	resp.StatusCode = status
 	resp.Body = io.NopCloser(bytes.NewReader(converted))
 
@@ -219,7 +258,7 @@ func (s *GatewayService) handleKiroErrorResponse(ctx context.Context, c *gin.Con
 			UpstreamStatusCode: status,
 			UpstreamRequestID:  resp.Header.Get("x-request-id"),
 			Kind:               "failover",
-			Message:            sanitizeUpstreamErrorMessage(message),
+			Message:            clientMessage,
 		})
 		return &UpstreamFailoverError{
 			StatusCode:      status,
@@ -228,11 +267,88 @@ func (s *GatewayService) handleKiroErrorResponse(ctx context.Context, c *gin.Con
 		}
 	}
 	if writeErr != nil {
-		writeErr(c, status, anthropicErrorType(status), message)
-		return fmt.Errorf("upstream error: %d message=%s", status, sanitizeUpstreamErrorMessage(message))
+		return s.writeKiroCompatNonFailoverError(ctx, c, account, resp, raw, converted, status, clientMessage, modelKey, writeErr)
 	}
 	_, err := s.handleErrorResponse(ctx, resp, c, account, modelKey)
 	return err
+}
+
+func sanitizeKiroClientErrorMessage(msg string) string {
+	msg = sanitizeUpstreamErrorMessage(msg)
+	return kiroAWSARNPattern.ReplaceAllString(msg, "arn:aws:***")
+}
+
+func kiroClientFacingError(status int, safeMessage string) (int, string, string) {
+	switch status {
+	case http.StatusBadRequest:
+		return http.StatusBadRequest, "invalid_request_error", safeMessage
+	case http.StatusUnauthorized:
+		return http.StatusBadGateway, "upstream_error", "Upstream authentication failed, please contact administrator"
+	case http.StatusForbidden:
+		return http.StatusBadGateway, "upstream_error", "Upstream access forbidden, please contact administrator"
+	case http.StatusTooManyRequests:
+		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
+	case 529:
+		return http.StatusServiceUnavailable, "overloaded_error", "Upstream service overloaded, please retry later"
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
+	default:
+		return http.StatusBadGateway, "upstream_error", "Upstream request failed"
+	}
+}
+
+func (s *GatewayService) writeKiroCompatNonFailoverError(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	resp *http.Response,
+	raw, converted []byte,
+	status int,
+	clientMessage string,
+	modelKey string,
+	writeErr kiroErrorWriter,
+) error {
+	if s.rateLimitService != nil {
+		shouldDisable := s.rateLimitService.HandleUpstreamError(ctx, account, status, resp.Header, raw, modelKey)
+		if shouldDisable {
+			return &UpstreamFailoverError{
+				StatusCode:      status,
+				ResponseBody:    converted,
+				ResponseHeaders: resp.Header.Clone(),
+			}
+		}
+	}
+
+	setOpsUpstreamError(c, status, clientMessage, "")
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: status,
+		UpstreamRequestID:  resp.Header.Get("x-request-id"),
+		Kind:               "http_error",
+		Message:            clientMessage,
+	})
+	MarkResponseCommitted(c)
+
+	if outStatus, errType, errMsg, matched := applyErrorPassthroughRule(
+		c,
+		account.Platform,
+		status,
+		converted,
+		http.StatusBadGateway,
+		"upstream_error",
+		"Upstream request failed",
+	); matched {
+		writeErr(c, outStatus, errType, errMsg)
+		return fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", status, clientMessage)
+	}
+
+	outStatus, errType, errMsg := kiroClientFacingError(status, clientMessage)
+	writeErr(c, outStatus, errType, errMsg)
+	return fmt.Errorf("upstream error: %d message=%s", status, clientMessage)
 }
 
 type kiroRelayOutcome struct {
@@ -312,7 +428,9 @@ func (s *GatewayService) pumpKiroEvents(resp *http.Response, conv *kiro.Converte
 				if errors.Is(result.err, context.Canceled) {
 					return result.err
 				}
-				return &kiroStreamError{status: http.StatusBadGateway, message: "upstream stream read error: " + result.err.Error(), transient: true}
+				// 原始错误含本机与上游地址，只进日志；对外只给分类后的描述。
+				logger.LegacyPrintf("service.gateway", "[Kiro] Upstream stream read error: %v", result.err)
+				return &kiroStreamError{status: http.StatusBadGateway, message: "upstream stream read error: " + sanitizeStreamError(result.err), transient: true}
 			}
 			ev := kiro.ParseEvent(result.frame)
 			if ev.Kind == kiro.EventException {
@@ -361,7 +479,7 @@ func (s *GatewayService) handleKiroStreamError(ctx context.Context, c *gin.Conte
 		logger.LegacyPrintf("service.gateway", "[Kiro] Empty response: account=%d model=%s", account.ID, modelKey)
 		return &UpstreamFailoverError{
 			StatusCode:             se.status,
-			ResponseBody:           anthropicErrorBody(se.status, se.message),
+			ResponseBody:           anthropicErrorBody(se.status, sanitizeKiroClientErrorMessage(se.message)),
 			Reason:                 kiroEmptyResponseReason,
 			RetryableOnSameAccount: true,
 			RequestScopedTransient: true,
@@ -376,11 +494,11 @@ func (s *GatewayService) handleKiroStreamError(ctx context.Context, c *gin.Conte
 		UpstreamStatusCode: se.status,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
 		Kind:               "failover",
-		Message:            sanitizeUpstreamErrorMessage(se.message),
+		Message:            sanitizeKiroClientErrorMessage(se.message),
 	})
 	return &UpstreamFailoverError{
 		StatusCode:             se.status,
-		ResponseBody:           anthropicErrorBody(se.status, se.message),
+		ResponseBody:           anthropicErrorBody(se.status, sanitizeKiroClientErrorMessage(se.message)),
 		RetryableOnSameAccount: se.transient,
 		RequestScopedTransient: se.transient,
 	}
@@ -388,7 +506,8 @@ func (s *GatewayService) handleKiroStreamError(ctx context.Context, c *gin.Conte
 
 // relayKiroResponse 读取 Kiro event stream 并写回客户端。流式请求逐事件转发；
 // 非流式请求在结束后一次性返回。客户端收到数据之前出现的错误都转为
-// failover，交给 handler 换账号重试。
+// failover，交给 handler 换账号重试，此时 outcome 为 nil；收到数据之后的错误
+// 在流中写入错误事件，outcome 与错误一起返回，用于计费。
 func (s *GatewayService) relayKiroResponse(
 	ctx context.Context,
 	c *gin.Context,
@@ -468,11 +587,12 @@ func (s *GatewayService) relayKiroResponse(
 	if err := s.handleKiroStreamError(ctx, c, account, resp, se, committed, modelKey); !committed {
 		return nil, err
 	}
-	errEvent := kiro.SSEEvent{Event: "error", Data: anthropicErrorBody(se.status, se.message)}
+	conv.SettleUsage()
+	errEvent := kiro.SSEEvent{Event: "error", Data: anthropicErrorBody(se.status, sanitizeKiroClientErrorMessage(se.message))}
 	if _, werr := c.Writer.Write(errEvent.AppendTo(nil)); werr == nil {
 		flusher.Flush()
 	}
-	return nil, se
+	return outcome, se
 }
 
 // countTokensKiro 本地估算 count_tokens。Kiro 没有对应接口。

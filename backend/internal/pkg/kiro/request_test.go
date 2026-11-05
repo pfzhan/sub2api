@@ -193,6 +193,23 @@ func TestBuildRequestRejectsEmptyMessages(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestIdeHeadersMachineIDIgnoresSharedProfileARN(t *testing.T) {
+	t.Parallel()
+	sharedARN := "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
+
+	socialA := ideHeaders(Credentials{ProfileARN: sharedARN, MachineID: "machine-a"})
+	socialB := ideHeaders(Credentials{ProfileARN: sharedARN, MachineID: "machine-b"})
+	require.NotEqual(t, socialA.Get("User-Agent"), socialB.Get("User-Agent"))
+	require.NotEqual(t, socialA.Get("x-amz-user-agent"), socialB.Get("x-amz-user-agent"))
+
+	idc := ideHeaders(Credentials{ProfileARN: sharedARN, ClientID: "cid-1"})
+	idcOther := ideHeaders(Credentials{ProfileARN: "arn:other", ClientID: "cid-1"})
+	require.Equal(t, idc.Get("User-Agent"), idcOther.Get("User-Agent"))
+
+	fallback := ideHeaders(Credentials{ProfileARN: sharedARN})
+	require.Equal(t, fallback.Get("User-Agent"), ideHeaders(Credentials{}).Get("User-Agent"))
+}
+
 func TestGenerateURLAndHeaders(t *testing.T) {
 	t.Parallel()
 	require.Equal(t, "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
@@ -206,7 +223,14 @@ func TestGenerateURLAndHeaders(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Bearer at", req.Header.Get("Authorization"))
 	require.Equal(t, "AmazonCodeWhispererStreamingService.GenerateAssistantResponse", req.Header.Get("x-amz-target"))
+	require.Equal(t, "application/vnd.amazon.eventstream", req.Header.Get("Accept"))
+	require.Contains(t, req.Header.Get("User-Agent"), "api/codewhispererstreaming#1.0.34")
+	require.NotContains(t, req.Header.Get("User-Agent"), "api/codewhisperer#1.0.34")
 	require.NotEmpty(t, req.Header.Get("amz-sdk-invocation-id"))
+
+	jsonUA := ideHeaders(Credentials{AccessToken: "at", AuthMethod: AuthMethodSocial}).Get("User-Agent")
+	require.Contains(t, jsonUA, "api/codewhisperer#1.0.34")
+	require.NotContains(t, jsonUA, "codewhispererstreaming")
 }
 
 func TestModelMapping(t *testing.T) {

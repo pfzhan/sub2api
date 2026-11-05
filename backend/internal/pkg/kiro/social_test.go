@@ -75,6 +75,7 @@ func TestExchangeSocialCode(t *testing.T) {
 	require.Equal(t, SocialProviderGoogle, creds.Provider)
 	require.Equal(t, "arn:p", creds.ProfileARN)
 	require.Equal(t, "rt", creds.RefreshToken)
+	require.NotEmpty(t, creds.MachineID)
 	require.NoError(t, creds.Validate())
 }
 

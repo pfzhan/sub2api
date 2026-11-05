@@ -44,6 +44,8 @@ git log --oneline d91f950fd67df6a8be6d42f6f0164802b4813ee9..HEAD -- \
 
 ## 与参考实现的差异
 
+- 生成接口与 profile/usage 查询都使用 Kiro IDE 的 SDK 请求头，不使用 Amazon Q CLI 标识。生成走 `api/codewhispererstreaming` 与 `Accept: application/vnd.amazon.eventstream`；ListProfiles / usage 走 `api/codewhisperer` 与 JSON Accept。取值来自 AIClient2API，官方抓包到位后再校正。IDE 版本号可由环境变量 `SUB2API_KIRO_IDE_VERSION` 覆盖（进程启动时解析一次，须为不低于内置基线的三段 semver）。
+- `conversationId` 由网关按「账号 + 客户端区分因子 + 首条 user 文本」派生，会话内稳定；参考实现由调用方自行管理。
 - 不注入 AIClient2API 追加的身份提示词。
 - 不解析正文里的 `[Called ...]` 文本工具调用，也不把字面量 `\n` 转成换行。这两项处理的是早期按文本解析响应时的遗留格式，按帧解码后不会出现。
 - 同一条消息的多个文本块用换行连接；`tool_result` 的 `is_error` 映射为 `status: "error"`。

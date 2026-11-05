@@ -140,7 +140,7 @@ func ExchangeSocialCode(ctx context.Context, doer Doer, login *SocialLogin, code
 	if resp.AccessToken == "" || resp.RefreshToken == "" {
 		return nil, errors.New("kiro social token: response has no tokens")
 	}
-	return &Credentials{
+	creds := &Credentials{
 		AccessToken:  resp.AccessToken,
 		RefreshToken: resp.RefreshToken,
 		ExpiresAt:    expiresAt(resp.ExpiresIn),
@@ -148,7 +148,9 @@ func ExchangeSocialCode(ctx context.Context, doer Doer, login *SocialLogin, code
 		Provider:     login.Provider,
 		Region:       DefaultRegion,
 		ProfileARN:   resp.ProfileARN,
-	}, nil
+	}
+	creds.EnsureMachineID()
+	return creds, nil
 }
 
 func randomURLSafe(n int) (string, error) {

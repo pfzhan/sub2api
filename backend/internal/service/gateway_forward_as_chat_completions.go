@@ -95,7 +95,11 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
 	}
 	if account.IsKiro() {
-		return s.forwardKiroCompat(ctx, c, account, anthropicBody, originalModel, clientStream, writeGatewayCCError,
+		var sessionCtx *SessionContext
+		if parsed != nil {
+			sessionCtx = parsed.SessionContext
+		}
+		return s.forwardKiroCompat(ctx, c, account, anthropicBody, originalModel, clientStream, sessionCtx, writeGatewayCCError,
 			func(resp *http.Response, mappedModel string, effort *string) (*ForwardResult, error) {
 				if clientStream {
 					return s.handleCCStreamingFromAnthropic(resp, c, originalModel, mappedModel, effort, startTime)

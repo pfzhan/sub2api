@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -104,6 +105,54 @@ func TestGatewayService_ForwardAsChatCompletionsKiroStreamErrorAfterOutput(t *te
 	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newKiroAccountForTest(), body, nil)
 	require.Error(t, err)
 	require.Contains(t, rec.Body.String(), "Hello", "content before the error reaches the client")
+}
+
+func TestGatewayService_ForwardAsChatCompletionsKiroRedactsARN(t *testing.T) {
+	arn := "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
+	upstream := &kiroHTTPUpstreamStub{resp: kiroJSONResponse(http.StatusBadRequest,
+		`{"message":"Validation failed for `+arn+`"}`)}
+	svc := newKiroGatewayForTest(upstream, &rateLimitAccountRepoStub{})
+	c, rec := newKiroCompatContext("/v1/chat/completions")
+
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newKiroAccountForTest(), body, nil)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "Validation failed")
+	require.NotContains(t, rec.Body.String(), arn)
+	require.NotContains(t, rec.Body.String(), "699475941385")
+}
+
+func TestGatewayService_ForwardAsChatCompletionsKiroNonFailoverUsesGenericMessage(t *testing.T) {
+	arn := "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
+	upstream := &kiroHTTPUpstreamStub{resp: kiroJSONResponse(http.StatusNotFound,
+		`{"message":"Unknown profile `+arn+`"}`)}
+	svc := newKiroGatewayForTest(upstream, &rateLimitAccountRepoStub{})
+	c, rec := newKiroCompatContext("/v1/chat/completions")
+
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newKiroAccountForTest(), body, nil)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, "Upstream request failed", gjson.Get(rec.Body.String(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), arn)
+}
+
+func TestGatewayService_ForwardAsChatCompletionsKiroAppliesPassthroughRule(t *testing.T) {
+	upstream := &kiroHTTPUpstreamStub{resp: kiroJSONResponse(http.StatusUnprocessableEntity,
+		`{"message":"Invalid schema for field messages"}`)}
+	svc := newKiroGatewayForTest(upstream, &rateLimitAccountRepoStub{})
+	c, rec := newKiroCompatContext("/v1/chat/completions")
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{newNonFailoverPassthroughRule(http.StatusUnprocessableEntity, "invalid schema", http.StatusTeapot, "上游请求失败")})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newKiroAccountForTest(), body, nil)
+	require.Error(t, err)
+	require.Equal(t, http.StatusTeapot, rec.Code)
+	require.Equal(t, "上游请求失败", gjson.Get(rec.Body.String(), "error.message").String())
+	require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
 }
 
 func TestGatewayService_ForwardAsChatCompletionsKiroContextLimit(t *testing.T) {

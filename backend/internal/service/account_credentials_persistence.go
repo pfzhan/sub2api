@@ -9,6 +9,11 @@ type accountCredentialsUpdater interface {
 	UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error
 }
 
+// accountCredentialKeyMerger 只把缺失的单个凭据键写入 JSONB，不覆盖其余字段。
+type accountCredentialKeyMerger interface {
+	MergeCredentialIfAbsent(ctx context.Context, id int64, key, value string) (string, error)
+}
+
 func persistAccountCredentials(ctx context.Context, repo AccountRepository, account *Account, credentials map[string]any) error {
 	if repo == nil || account == nil {
 		return nil

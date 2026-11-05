@@ -13,6 +13,7 @@ func TestParseImportBareRefreshToken(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "aorAAAAAG-token", c.RefreshToken)
 	require.Equal(t, AuthMethodSocial, c.AuthMethod)
+	require.NotEmpty(t, c.MachineID)
 }
 
 func TestParseImportRejectsMultiWordText(t *testing.T) {
@@ -36,6 +37,7 @@ func TestParseImportKiroIDESocial(t *testing.T) {
 	require.Equal(t, "Github", c.Provider)
 	require.Equal(t, "arn:aws:codewhisperer:us-east-1:111:profile/ABC", c.ProfileARN)
 	require.Equal(t, time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC), c.ExpiresAt.UTC())
+	require.NotEmpty(t, c.MachineID)
 }
 
 func TestParseImportKiroIDEBuilderIDWithClientFile(t *testing.T) {
@@ -62,6 +64,7 @@ func TestParseImportKiroIDEBuilderIDWithClientFile(t *testing.T) {
 	require.Equal(t, time.Date(2027, 1, 28, 10, 0, 0, 0, time.UTC), c.ClientSecretExpiresAt.UTC())
 	require.Equal(t, time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC), c.ExpiresAt.UTC())
 	require.Equal(t, "us-east-1", c.SSORegion)
+	require.Empty(t, c.MachineID)
 }
 
 func TestParseImportArrayAndBuilderIDLabel(t *testing.T) {
@@ -95,6 +98,7 @@ func TestCredentialsMapRoundTrip(t *testing.T) {
 		Region:       "us-east-1",
 		SSORegion:    "us-east-1",
 		StartURL:     BuilderIDStartURL,
+		MachineID:    "mid-1",
 	}
 	m := in.ToMap()
 	require.Equal(t, "2026-10-30T10:00:00Z", m[CredExpiresAt])
@@ -111,7 +115,23 @@ func TestCredentialsMapRoundTrip(t *testing.T) {
 		Region:       out.Region,
 		SSORegion:    out.SSORegion,
 		StartURL:     out.StartURL,
+		MachineID:    out.MachineID,
 	})
+}
+
+func TestEnsureMachineID(t *testing.T) {
+	t.Parallel()
+
+	social := Credentials{AuthMethod: AuthMethodSocial, ProfileARN: "arn:shared"}
+	require.True(t, social.EnsureMachineID())
+	require.NotEmpty(t, social.MachineID)
+	first := social.MachineID
+	require.False(t, social.EnsureMachineID())
+	require.Equal(t, first, social.MachineID)
+
+	idc := Credentials{AuthMethod: AuthMethodIdC, ClientID: "cid"}
+	require.False(t, idc.EnsureMachineID())
+	require.Empty(t, idc.MachineID)
 }
 
 func TestNormalizeAuthMethod(t *testing.T) {

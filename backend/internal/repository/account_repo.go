@@ -871,6 +871,52 @@ func decodeAccountExtraJSON(raw []byte) (any, bool, error) {
 	return value, true, nil
 }
 
+// MergeCredentialIfAbsent 仅在 credentials 中该键为空时写入，其它键保持不变。
+// 返回库里最终的值（本次写入或并发获胜者已有的值）。
+func (r *accountRepository) MergeCredentialIfAbsent(ctx context.Context, id int64, key, value string) (string, error) {
+	if scoped := r.accountTransactionScope(ctx); scoped != r {
+		return scoped.MergeCredentialIfAbsent(ctx, id, key, value)
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", errors.New("credential key is required")
+	}
+	client := clientFromContext(ctx, r.client)
+	rows, err := client.QueryContext(ctx, `
+		UPDATE accounts
+		SET
+			credentials = CASE
+				WHEN COALESCE(BTRIM(credentials->>$2), '') = '' THEN
+					COALESCE(credentials, '{}'::jsonb) || jsonb_build_object($2, $3::text)
+				ELSE credentials
+			END,
+			updated_at = NOW()
+		WHERE id = $1 AND deleted_at IS NULL
+		RETURNING credentials->>$2
+	`, id, key, value)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		return "", service.ErrAccountNotFound
+	}
+	var stored sql.NullString
+	if err := rows.Scan(&stored); err != nil {
+		return "", err
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if dbent.TxFromContext(ctx) == nil {
+		r.syncSchedulerAccountSnapshot(ctx, id)
+	}
+	return stored.String, nil
+}
+
 func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
 	payload, err := json.Marshal(normalizeJSONMap(credentials))
 	if err != nil {

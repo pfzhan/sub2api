@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // 认证方式。Builder ID 与 IAM Identity Center 都是 AWS SSO OIDC 签发的凭据，
@@ -31,6 +33,9 @@ const (
 	CredSSORegion             = "sso_region"
 	CredProfileARN            = "profile_arn"
 	CredStartURL              = "start_url"
+	// CredMachineID 是 social 账号的稳定设备标识。所有 social 账号共享同一个
+	// Kiro profileArn，不能用它派生 machineID。
+	CredMachineID = "machine_id"
 )
 
 // provider 字段里 AWS 登录的取值，与 Kiro IDE 一致。
@@ -59,6 +64,8 @@ type Credentials struct {
 	SSORegion  string
 	ProfileARN string
 	StartURL   string
+	// MachineID 是 social 账号持久化的设备标识。IdC 用 ClientID 派生，不写此字段。
+	MachineID string
 }
 
 // IsSocial 报告凭据是否走 Kiro social 刷新。
@@ -112,6 +119,7 @@ func CredentialsFromMap(m map[string]any) Credentials {
 		SSORegion:  stringValue(m[CredSSORegion]),
 		ProfileARN: stringValue(m[CredProfileARN]),
 		StartURL:   stringValue(m[CredStartURL]),
+		MachineID:  stringValue(m[CredMachineID]),
 	}
 	c.AuthMethod = NormalizeAuthMethod(stringValue(m[CredAuthMethod]), c.ClientID != "" && c.ClientSecret != "")
 	return c
@@ -141,7 +149,22 @@ func (c Credentials) ToMap() map[string]any {
 	put(CredSSORegion, c.SSORegion)
 	put(CredProfileARN, c.ProfileARN)
 	put(CredStartURL, c.StartURL)
+	put(CredMachineID, c.MachineID)
 	return out
+}
+
+// EnsureMachineID 为没有 ClientID 的凭据补一个稳定的 machine id。
+// social 账号共享 profileArn，RefreshToken 刷新后会变，都不能当身份。
+// 已有 MachineID 或可用 ClientID（IdC）时不改，返回 false。
+func (c *Credentials) EnsureMachineID() bool {
+	if c == nil {
+		return false
+	}
+	if strings.TrimSpace(c.MachineID) != "" || strings.TrimSpace(c.ClientID) != "" {
+		return false
+	}
+	c.MachineID = uuid.NewString()
+	return true
 }
 
 // NormalizeAuthMethod 把各来源的写法归一为 social 或 idc。
@@ -212,7 +235,9 @@ func ParseImport(raw string) (Credentials, error) {
 		if strings.ContainsAny(text, " \t\r\n") {
 			return Credentials{}, errors.New("input is neither JSON nor a single refresh token")
 		}
-		return Credentials{RefreshToken: text, AuthMethod: AuthMethodSocial}, nil
+		c := Credentials{RefreshToken: text, AuthMethod: AuthMethodSocial}
+		c.EnsureMachineID()
+		return c, nil
 	}
 
 	var objects []map[string]any
@@ -266,6 +291,7 @@ func ParseImport(raw string) (Credentials, error) {
 		c.SSORegion = firstNonEmpty(get("idcRegion", "ssoRegion", "sso_region"), c.SSORegion)
 		c.ProfileARN = firstNonEmpty(get("profileArn", "profile_arn"), c.ProfileARN)
 		c.StartURL = firstNonEmpty(get("startUrl", "start_url"), c.StartURL)
+		c.MachineID = firstNonEmpty(get("machineId", "machine_id"), c.MachineID)
 	}
 	c.AuthMethod = NormalizeAuthMethod(rawMethod, c.ClientID != "" && c.ClientSecret != "")
 	if c.Provider == "" && isBuilderIDMethod(rawMethod) {
@@ -277,6 +303,7 @@ func ParseImport(raw string) (Credentials, error) {
 	if err := c.Validate(); err != nil {
 		return Credentials{}, err
 	}
+	c.EnsureMachineID()
 	return c, nil
 }
 
