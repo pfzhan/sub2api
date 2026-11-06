@@ -1,0 +1,19 @@
+# pnpm 9 requires a non-empty packages field once this file exists.
+packages:
+  - '.'
+
+# pnpm >= 10 reads overrides from here and ignores the "pnpm" field in package.json.
+# Keep in sync with package.json "pnpm.overrides" (still used by pnpm 9 in CI).
+overrides:
+  js-cookie: 3.0.7
+  form-data@<4.0.6: '>=4.0.6'
+  postcss@<8.5.18: '>=8.5.18'
+  dompurify@<3.4.17: '>=3.4.17'
+  source-map-js@<1.2.2: '>=1.2.2'
+  follow-redirects@<1.16.2: '>=1.16.2'
+  decode-uri-component@<0.5.1: '>=0.5.1'
+
+# pnpm >= 10 blocks dependency build scripts unless allowed.
+allowBuilds:
+  esbuild: true
+  vue-demi: true
