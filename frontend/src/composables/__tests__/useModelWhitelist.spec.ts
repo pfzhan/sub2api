@@ -36,6 +36,16 @@ describe('useModelWhitelist', () => {
     }
   })
 
+  it('kimi 模型列表包含 K3 和 K2.6 等当前型号', () => {
+    const models = getModelsByPlatform('kimi')
+
+    expect(models).toEqual(expect.arrayContaining([
+      'kimi-k3', 'k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k',
+      'kimi-for-coding', 'kimi-for-coding-highspeed', 'kimi-k2.6', 'kimi-k2.5'
+    ]))
+    expect(models).not.toContain('kimi-k2.7-code')
+  })
+
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
     const models = getModelsByPlatform('openai')
 

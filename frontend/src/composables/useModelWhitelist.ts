@@ -230,11 +230,15 @@ const yiModels = [
 ]
 
 // Moonshot/Kimi
+// API Platform 用 kimi-* / moonshot-*；Kimi Code endpoint 用 kimi-for-coding 和 bare k3 / k3-256k。
 const moonshotModels = [
-  'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k',
+  'kimi-k3',
+  'k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k',
+  'kimi-for-coding', 'kimi-for-coding-highspeed',
+  'kimi-k2.6', 'kimi-k2.5',
+  'kimi-k2-thinking', 'kimi-k2',
   'kimi-latest',
-  'kimi-for-coding',
-  'kimi-k2'
+  'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'
 ]
 
 // 字节跳动 豆包
