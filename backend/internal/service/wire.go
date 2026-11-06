@@ -138,8 +138,11 @@ func ProvideTokenRefreshService(
 	proxyRepo ProxyRepository,
 	refreshAPI *OAuthRefreshAPI,
 	runtimeBlocker AccountRuntimeBlocker,
+	kiroOAuthService *KiroOAuthService,
 ) *TokenRefreshService {
 	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache, grokOAuthService)
+	kiroRefresher := NewKiroTokenRefresher(kiroOAuthService)
+	svc.RegisterRefresher(PlatformKiro, kiroRefresher, kiroRefresher)
 	// 注入 OpenAI privacy opt-out 依赖
 	svc.SetPrivacyDeps(privacyClientFactory, proxyRepo)
 	// 注入统一 OAuth 刷新 API（消除 TokenRefreshService 与 TokenProvider 之间的竞争条件）
@@ -238,6 +241,7 @@ func ProvideAccountUsageService(
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
+	kiroQuotaFetcher *KiroQuotaFetcher,
 ) *AccountUsageService {
 	service := NewAccountUsageService(
 		accountRepo,
@@ -253,7 +257,14 @@ func ProvideAccountUsageService(
 		tlsFPProfileService,
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.SetKiroQuotaFetcher(kiroQuotaFetcher)
 	return service
+}
+
+// ProvideKiroQuotaFetcher 创建 Kiro 额度查询。用量展示与额度冷却共用同一个
+// 实例，共享结果缓存，避免对同一账号重复查询。
+func ProvideKiroQuotaFetcher(kiroTokenProvider *KiroTokenProvider) *KiroQuotaFetcher {
+	return NewKiroQuotaFetcher(kiroTokenProvider)
 }
 
 func ProvideAccountTestService(
@@ -268,6 +279,7 @@ func ProvideAccountTestService(
 	openAIGatewayService *OpenAIGatewayService,
 	settingService *SettingService,
 	pluginManager *PluginManager,
+	kiroTokenProvider *KiroTokenProvider,
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
@@ -283,6 +295,7 @@ func ProvideAccountTestService(
 	service.SetOpenAIGatewayService(openAIGatewayService)
 	service.SetSettingService(settingService)
 	service.SetPluginManager(pluginManager)
+	service.SetKiroTokenProvider(kiroTokenProvider)
 	return service
 }
 
@@ -367,6 +380,16 @@ func ProvideAntigravityTokenProvider(
 	p.SetRefreshPolicy(AntigravityProviderRefreshPolicy())
 	p.SetTempUnschedCache(tempUnschedCache)
 	return p
+}
+
+// ProvideKiroTokenProvider creates KiroTokenProvider with OAuthRefreshAPI injection.
+func ProvideKiroTokenProvider(
+	accountRepo AccountRepository,
+	tokenCache GeminiTokenCache,
+	kiroOAuthService *KiroOAuthService,
+	refreshAPI *OAuthRefreshAPI,
+) *KiroTokenProvider {
+	return NewKiroTokenProvider(accountRepo, tokenCache, refreshAPI, NewKiroTokenRefresher(kiroOAuthService))
 }
 
 // ProvideGrokTokenProvider creates GrokTokenProvider with OAuthRefreshAPI injection.
@@ -513,6 +536,7 @@ func ProvideRateLimitService(
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
 	ollamaCloudUsage *OllamaCloudUsageService,
+	kiroQuotaFetcher *KiroQuotaFetcher,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
@@ -523,6 +547,9 @@ func ProvideRateLimitService(
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
 	svc.SetOllamaCloudUsageProbeScheduler(ollamaCloudUsage)
+	if kiroQuotaFetcher != nil {
+		svc.SetKiroQuotaLookup(kiroQuotaFetcher)
+	}
 	return svc
 }
 
@@ -907,6 +934,9 @@ var ProviderSet = wire.NewSet(
 	ProvideGeminiTokenProvider,
 	NewGeminiMessagesCompatService,
 	ProvideAntigravityTokenProvider,
+	NewKiroOAuthService,
+	ProvideKiroTokenProvider,
+	ProvideKiroQuotaFetcher,
 	ProvideGrokTokenProvider,
 	ProvideOpenAITokenProvider,
 	ProvideOpenAIQuotaService,

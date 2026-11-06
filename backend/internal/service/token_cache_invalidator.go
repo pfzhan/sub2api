@@ -53,6 +53,8 @@ func (c *CompositeTokenCacheInvalidator) InvalidateToken(ctx context.Context, ac
 		keysToDelete = append(keysToDelete, "grok:"+accountIDKey)
 	case PlatformAnthropic:
 		keysToDelete = append(keysToDelete, ClaudeTokenCacheKey(account))
+	case PlatformKiro:
+		keysToDelete = append(keysToDelete, KiroTokenCacheKey(account))
 	default:
 		return nil
 	}

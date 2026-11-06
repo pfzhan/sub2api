@@ -2369,14 +2369,15 @@ func (r *accountRepository) SetRateLimitedIfLater(ctx context.Context, id int64,
 	return nil
 }
 
-// ClearRateLimitIfObserved clears exactly the Grok rate-limit generation seen
-// by a successful request. Matching both timestamps prevents a stale success
-// from erasing a later clear/re-arm generation with an equal or shorter reset.
+// ClearRateLimitIfObserved clears exactly the Grok or Kiro rate-limit
+// generation seen by a successful request or usage query. Matching both
+// timestamps prevents a stale observation from erasing a later clear/re-arm
+// generation with an equal or shorter reset. overload_until is left alone.
 func (r *accountRepository) ClearRateLimitIfObserved(ctx context.Context, id int64, observedLimitedAt, observedResetAt time.Time) (bool, error) {
 	updated, err := r.client.Account.Update().
 		Where(
 			dbaccount.IDEQ(id),
-			dbaccount.PlatformEQ(service.PlatformGrok),
+			dbaccount.PlatformIn(service.PlatformGrok, service.PlatformKiro),
 			dbaccount.TypeEQ(service.AccountTypeOAuth),
 			dbaccount.RateLimitedAtEQ(observedLimitedAt),
 			dbaccount.RateLimitResetAtEQ(observedResetAt),

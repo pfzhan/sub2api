@@ -123,6 +123,7 @@ var ProviderSet = wire.NewSet(
 	NewRPMCache,
 	NewUserRPMCache,
 	NewUserMsgQueueCache,
+	NewKiroPromptCache,
 	NewDashboardCache,
 	NewEmailCache,
 	NewIdentityCache,

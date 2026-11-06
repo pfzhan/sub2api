@@ -94,6 +94,15 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	if err != nil {
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
 	}
+	if account.IsKiro() {
+		return s.forwardKiroCompat(ctx, c, account, anthropicBody, originalModel, clientStream, writeGatewayCCError,
+			func(resp *http.Response, mappedModel string, effort *string) (*ForwardResult, error) {
+				if clientStream {
+					return s.handleCCStreamingFromAnthropic(resp, c, originalModel, mappedModel, effort, startTime)
+				}
+				return s.handleCCBufferedFromAnthropic(resp, c, originalModel, mappedModel, effort, startTime)
+			})
+	}
 
 	// 6. Apply Claude Code mimicry for OAuth accounts.
 	// Chat Completions 协议进来的请求永远不是 Claude Code 客户端，所以对 OAuth 账号

@@ -105,6 +105,15 @@ func (s *GatewayService) ForwardAsResponses(
 	if err != nil {
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
 	}
+	if account.IsKiro() {
+		return s.forwardKiroCompat(ctx, c, account, anthropicBody, originalModel, clientStream, writeResponsesError,
+			func(resp *http.Response, mappedModel string, effort *string) (*ForwardResult, error) {
+				if clientStream {
+					return s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, effort, startTime, clientToolMapping)
+				}
+				return s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, effort, startTime, clientToolMapping)
+			})
+	}
 
 	// 6. Apply Claude Code mimicry for OAuth accounts (non-Claude-Code endpoints).
 	// OpenAI Responses 协议进来的请求永远不是 Claude Code 客户端，所以对 OAuth 账号

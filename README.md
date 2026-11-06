@@ -239,6 +239,18 @@ Upstream prompt caches are per account, so spreading new sessions evenly across 
 
 Clients that send no session ID (`metadata.user_id`) are matched to their conversation by a chain of message digests, so each turn returns to the same account. These digests are kept in memory on each gateway instance for one hour. With several gateway replicas, route a given API key to the same replica at the load balancer, or have clients send a session ID.
 
+### Kiro Accounts
+
+Kiro accounts (platform `kiro`, OAuth) serve Claude models through Kiro's `generateAssistantResponse` API. Groups on the Kiro platform accept `/v1/messages`, Chat Completions and Responses; `count_tokens` is estimated locally because Kiro has no equivalent endpoint.
+
+Add an account under **Accounts → Create → Kiro** in one of these ways:
+
+- **Import credentials**: paste Kiro IDE's `kiro-auth-token.json` (optionally together with the `{clientIdHash}.json` next to it), an AWS SSO cache / AIClient2API JSON export, or a bare refresh token.
+- **AWS Builder ID** or **IAM Identity Center** device login. For IAM Identity Center, enter the organization start URL and the SSO region.
+- **Google / GitHub** login: open the login link, then paste the `kiro://` callback URL the browser is redirected to back into the form.
+
+Access tokens refresh in the background. The usage column shows the account's Kiro credits. When an account runs out of credits it is paused until Kiro's reported reset time (falling back to the 1st of next month), and it resumes early once a usage query shows credits again. Kiro reports only credits, so prompt cache reads and writes are estimated locally from the request's `cache_control` breakpoints.
+
 ---
 
 ## Deployment

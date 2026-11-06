@@ -241,6 +241,18 @@ Nginx 默认会丢弃名称中含下划线的请求头（如 `session_id`），�
 
 不带会话 ID（`metadata.user_id`）的客户端，网关按消息摘要链识别出同一段对话，让每一轮回到同一账号。摘要记录保存在每个网关实例的内存里，有效期 1 小时。部署多个网关副本时，请在负载均衡上把同一个 API Key 路由到同一副本，或让客户端带上会话 ID。
 
+### Kiro 账号
+
+Kiro 账号（平台 `kiro`，OAuth）通过 Kiro 的 `generateAssistantResponse` 接口提供 Claude 模型。Kiro 平台的分组支持 `/v1/messages`、Chat Completions 和 Responses；Kiro 没有 `count_tokens` 接口，由网关在本地估算。
+
+在 **账号管理 → 创建账号 → Kiro** 中用以下任一方式添加：
+
+- **导入凭据**：粘贴 Kiro IDE 的 `kiro-auth-token.json`（可连同同目录的 `{clientIdHash}.json` 一起粘贴）、AWS SSO cache 或 AIClient2API 导出的 JSON，或者单独一个 refresh token。
+- **AWS Builder ID** 或 **IAM Identity Center** 设备登录。IAM Identity Center 需要填写组织的 start URL 和 SSO 区域。
+- **Google / GitHub** 登录：打开登录链接，把浏览器跳转到的 `kiro://` 回调地址粘贴回表单。
+
+access token 在后台自动刷新。账号列表的用量列显示 Kiro credits。额度用完的账号会暂停到 Kiro 返回的重置时间（查不到时到下月 1 日）；查询用量时发现额度恢复，会提前解除。Kiro 只返回 credits，prompt 缓存的读写按请求里的 `cache_control` 断点在本地估算。
+
 ## Codex Fast/Flex 策略说明
 
 管理员后台的 `系统设置 -> 网关服务 -> OpenAI Fast/Flex 策略` 只负责处理请求体中的 `service_tier`，不会修改 Codex 客户端的模型目录，也不会让 Codex UI 自动出现 Speed 或 `/fast` 选项。

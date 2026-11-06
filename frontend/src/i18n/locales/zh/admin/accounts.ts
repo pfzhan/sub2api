@@ -319,6 +319,7 @@ export default {
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
+        kiro: 'Kiro',
       },
       cnProviders: {
         accountMode: {
@@ -512,6 +513,8 @@ export default {
         }
       },
       usageWindow: {
+        kiroMonthly: '本月',
+        kiroCredits: '已用 {used} / {limit} 积分',
         statsTitle: '5小时窗口用量统计',
         statsTitleDaily: '每日用量统计',
         geminiProDaily: 'Pro',
@@ -1567,6 +1570,38 @@ export default {
           validateAndCreate: '验证并创建账号',
           pleaseEnterRefreshToken: '请输入 Refresh Token',
           failedToValidateRT: '验证 Refresh Token 失败'
+        },
+        // Kiro specific
+        kiro: {
+          title: 'Kiro 账号授权',
+          methodImport: '导入凭据',
+          methodBuilderId: 'AWS Builder ID',
+          methodIdentityCenter: 'IAM Identity Center',
+          methodGoogle: 'Google',
+          methodGithub: 'GitHub',
+          region: '区域',
+          regionHint: '调用 Kiro 接口的区域，默认 us-east-1。导入的凭据注明了区域时以凭据为准。',
+          startUrl: 'Start URL',
+          startUrlHint: '组织的 AWS 访问门户地址，例如 https://my-org.awsapps.com/start',
+          ssoRegion: 'SSO 区域',
+          ssoRegionHint: 'IAM Identity Center 所在区域，留空时与上面的区域相同',
+          importDesc: '粘贴 Kiro 的 refresh token，或 kiro-auth-token.json 的完整内容。IdC 凭据需包含 clientId 和 clientSecret。',
+          importPlaceholder: '粘贴 refresh token 或 JSON 凭据...',
+          validating: '验证中...',
+          validateAndCreate: '验证并创建账号',
+          importFailed: '导入 Kiro 凭据失败',
+          builderIdDesc: '点击开始登录后会打开 AWS 授权页面，确认页面上显示的代码与下方一致后完成授权，本页会自动创建账号。',
+          identityCenterDesc: '使用组织的 IAM Identity Center 登录。点击开始登录后会打开组织的授权页面，确认页面上显示的代码与下方一致后完成授权，本页会自动创建账号。',
+          socialDesc: '点击开始登录后会打开 Kiro 登录页面。登录完成后浏览器会跳转到以 kiro:// 开头的地址，请把这个完整地址粘贴到下方。',
+          startLogin: '开始登录',
+          userCode: '授权码',
+          openLink: '授权页面',
+          loginPage: '登录页面',
+          callbackUrl: '回调地址',
+          callbackUrlHint: '地址栏没有变化时，可在浏览器开发者工具的网络面板中找到最后一个跳转请求，复制其中的 kiro:// 地址。',
+          completeLogin: '完成授权',
+          waiting: '等待授权...',
+          loginFailed: 'Kiro 登录失败'
         }
       },
       // Gemini specific (platform-wide)
@@ -1720,6 +1755,7 @@ export default {
       geminiAccount: 'Gemini 账号',
       antigravityAccount: 'Antigravity 账号',
       grokAccount: 'Grok 账号',
+      kiroAccount: 'Kiro 账号',
       inputMethod: '输入方式',
       reAuthorizedSuccess: '账号重新授权成功',
       // Test Modal

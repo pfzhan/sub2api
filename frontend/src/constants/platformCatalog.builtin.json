@@ -278,6 +278,13 @@
           }
         ]
       }
+    },
+    {
+      "id": "kiro",
+      "display_name": "Kiro",
+      "gateway": "anthropic",
+      "cn_provider": false,
+      "litellm_provider": "anthropic"
     }
   ],
   "composite_precedence": [
@@ -293,6 +300,7 @@
     "opencode_go",
     "typesafe",
     "command_code",
-    "cline"
+    "cline",
+    "kiro"
   ]
 }

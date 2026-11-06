@@ -36,8 +36,12 @@ type RateLimitService struct {
 	// ratelimit_service_ollama_429.go for how real-Ollama 429s schedule an async
 	// probe to learn the true usage-window reset.
 	ollamaCloudUsageProbe ollamaCloudUsageProbeScheduler
-	usageCacheMu          sync.RWMutex
-	usageCache            map[int64]*geminiUsageCacheEntry
+	// kiroQuota 查询 Kiro 账号额度，用于额度耗尽时按上游的真实重置时间冷却。
+	kiroQuota kiroQuotaLookup
+	// runAsync 执行不阻塞请求的后台任务，测试中可替换为同步执行。
+	runAsync     func(func())
+	usageCacheMu sync.RWMutex
+	usageCache   map[int64]*geminiUsageCacheEntry
 
 	// OpenAI Team 联动熔断的进程内去重：teamID → 去重窗口截止时间
 	openaiTeamLinkedMu     sync.Mutex
@@ -105,6 +109,7 @@ func NewRateLimitService(accountRepo AccountRepository, usageRepo UsageLogReposi
 		geminiQuotaService: geminiQuotaService,
 		tempUnschedCache:   tempUnschedCache,
 		usageCache:         make(map[int64]*geminiUsageCacheEntry),
+		runAsync:           func(f func()) { go f() },
 	}
 }
 
@@ -423,6 +428,13 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 	}
 
+	// Kiro 额度用尽与不同原因的 403 分别处理（见 ratelimit_kiro.go）。
+	if account.IsKiro() && (statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden) {
+		if handled, disable := s.handleKiroError(ctx, account, statusCode, responseBody, upstreamMsg); handled {
+			return disable
+		}
+	}
+
 	switch statusCode {
 	case 400:
 		// "organization has been disabled" → 永久禁用
@@ -518,6 +530,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 					}
 					slog.Info("antigravity_401_force_refresh_marked", "account_id", authAccount.ID)
 				}
+			}
+			if authAccount.IsKiro() {
+				s.markKiroTokenRejected(ctx, authAccount)
 			}
 			cooldownMinutes := s.cfg.RateLimit.OAuth401CooldownMinutes
 			if cooldownMinutes <= 0 {
@@ -1037,7 +1052,8 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 	// 国产供应商与 openai 同口径:HTML 403(CDN/代理拦截页)不构成账号失效证据,
 	// 且 403 在 failover 状态集里会被逐账号重放——直接 SetError 会让一个坏请求/
 	// 一层坏代理连环永久禁用整组账号。走 HTML 豁免 + N 次累计 + 临时冷却。
-	if account.Platform == PlatformOpenAI || account.IsMultiProtocolAPIKey() {
+	// Kiro 未识别原因的 403 同样走累计计数，参考实现对这类 403 也只是暂时停用。
+	if account.Platform == PlatformOpenAI || account.IsMultiProtocolAPIKey() || account.IsKiro() {
 		return s.handleOpenAI403(ctx, account, upstreamMsg, responseBody)
 	}
 	// 非 Antigravity 平台：保持原有行为
@@ -1099,7 +1115,11 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 	}
 
 	until := time.Now().Add(time.Duration(openAI403CooldownMinutesDefault) * time.Minute)
-	reason := fmt.Sprintf("OpenAI 403 temporary cooldown (%d/%d): %s", count, openAI403DisableThreshold, msg)
+	label := "OpenAI"
+	if account.IsKiro() {
+		label = "Kiro"
+	}
+	reason := fmt.Sprintf("%s 403 temporary cooldown (%d/%d): %s", label, count, openAI403DisableThreshold, msg)
 	s.notifyAccountSchedulingBlocked(account, until, "openai_403_temp")
 	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
 		slog.Warn("openai_403_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)

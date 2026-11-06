@@ -142,6 +142,22 @@ func NewTokenRefreshService(
 	return s
 }
 
+// RegisterRefresher 登记一个平台的后台刷新器，需要在 Start 之前调用。
+// 同一平台重复登记时以最后一次为准。
+func (s *TokenRefreshService) RegisterRefresher(platform string, refresher TokenRefresher, executor OAuthRefreshExecutor) {
+	if s == nil || platform == "" || refresher == nil {
+		return
+	}
+	registration := tokenRefreshRegistration{platform: platform, refresher: refresher, executor: executor}
+	for i := range s.registrations {
+		if s.registrations[i].platform == platform {
+			s.registrations[i] = registration
+			return
+		}
+	}
+	s.registrations = append(s.registrations, registration)
+}
+
 func (s *TokenRefreshService) eligiblePlatforms() []string {
 	platforms := make([]string, 0, len(s.registrations))
 	for _, registration := range s.registrations {

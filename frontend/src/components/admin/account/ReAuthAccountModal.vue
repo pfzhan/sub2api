@@ -22,7 +22,9 @@
                     ? 'from-purple-500 to-purple-600'
                     : isGrok
                       ? 'from-zinc-700 to-zinc-900'
-                      : 'from-orange-500 to-orange-600'
+                      : isKiro
+                        ? 'from-fuchsia-500 to-fuchsia-600'
+                        : 'from-orange-500 to-orange-600'
             ]"
           >
             <Icon name="sparkles" size="md" class="text-white" />
@@ -41,7 +43,9 @@
                       ? t('admin.accounts.antigravityAccount')
                       : isGrok
                         ? t('admin.accounts.grokAccount')
-                        : t('admin.accounts.claudeCodeAccount')
+                        : isKiro
+                          ? t('admin.accounts.kiroAccount')
+                          : t('admin.accounts.claudeCodeAccount')
               }}
             </span>
           </div>
@@ -120,7 +124,14 @@
         </div>
       </div>
 
+      <KiroAuthPanel
+        v-if="isKiro"
+        :proxy-id="account.proxy_id ?? null"
+        :creating="kiroSaving"
+        @authorized="handleKiroAuthorized"
+      />
       <OAuthAuthorizationFlow
+        v-else
         ref="oauthFlowRef"
         :add-method="addMethod"
         :auth-url="currentAuthUrl"
@@ -207,6 +218,9 @@ import type { Account } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import OAuthAuthorizationFlow from '@/components/account/OAuthAuthorizationFlow.vue'
+import KiroAuthPanel from '@/components/account/KiroAuthPanel.vue'
+import { withClearedKiroIdentity } from '@/api/admin/kiro'
+import { extractApiErrorMessage } from '@/utils/apiError'
 
 // Type for exposed OAuthAuthorizationFlow component
 // Note: defineExpose automatically unwraps refs, so we use the unwrapped types
@@ -254,6 +268,8 @@ const isGemini = computed(() => props.account?.platform === 'gemini')
 const isAnthropic = computed(() => props.account?.platform === 'anthropic')
 const isAntigravity = computed(() => props.account?.platform === 'antigravity')
 const isGrok = computed(() => props.account?.platform === 'grok')
+const isKiro = computed(() => props.account?.platform === 'kiro')
+const kiroSaving = ref(false)
 
 /**
  * Grok reauth default tab (password auth is hidden):
@@ -691,6 +707,25 @@ const handleValidateRefreshToken = async (refreshTokenInput: string) => {
     appStore.showError(antigravityOAuth.error.value)
   } finally {
     antigravityOAuth.loading.value = false
+  }
+}
+
+// Kiro 凭据已由后端验证，直接写回账号
+const handleKiroAuthorized = async (credentials: Record<string, unknown>) => {
+  if (!props.account || !isKiro.value) return
+  kiroSaving.value = true
+  try {
+    const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(props.account.id, {
+      type: 'oauth',
+      credentials: withClearedKiroIdentity(credentials)
+    })
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized', updatedAccount)
+    handleClose()
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('admin.accounts.oauth.authFailed')))
+  } finally {
+    kiroSaving.value = false
   }
 }
 

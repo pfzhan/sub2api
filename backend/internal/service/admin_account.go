@@ -131,6 +131,8 @@ var duplicateAccountDiscardedExtraKeys = map[string]struct{}{
 	"antigravity_force_token_refresh":        {},
 	"antigravity_force_token_refresh_at":     {},
 	"antigravity_force_token_refresh_reason": {},
+	kiroRejectedTokenExtraKey:                {},
+	kiroQuotaCooldownExtraKey:                {},
 	"drive_storage_limit":                    {},
 	"drive_storage_usage":                    {},
 	"drive_tier_updated_at":                  {},
@@ -411,8 +413,8 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
-	if input.Platform == PlatformTypeSafe && input.Type != AccountTypeAPIKey {
-		return nil, errors.New("typesafe accounts only support apikey credentials")
+	if err := validatePlatformAccountType(input.Platform, input.Type); err != nil {
+		return nil, err
 	}
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
@@ -581,8 +583,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
-	if account.Platform == PlatformTypeSafe && input.Type != "" && input.Type != AccountTypeAPIKey {
-		return nil, errors.New("typesafe accounts only support apikey credentials")
+	if input.Type != "" {
+		if err := validatePlatformAccountType(account.Platform, input.Type); err != nil {
+			return nil, err
+		}
 	}
 	var normalizedExtra map[string]any
 	if input.Extra != nil {

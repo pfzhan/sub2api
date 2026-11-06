@@ -116,6 +116,7 @@ export default {
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
+        kiro: 'Kiro',
       },
       cnProviders: {
         accountMode: {
@@ -1476,7 +1477,39 @@ export default {
                     validateAndCreate: 'Validate & Create',
                     pleaseEnterRefreshToken: 'Please enter Refresh Token',
                     failedToValidateRT: 'Failed to validate Refresh Token'
-                  }
+                  },
+        // Kiro specific
+        kiro: {
+          title: 'Kiro Account Authorization',
+          methodImport: 'Import credentials',
+          methodBuilderId: 'AWS Builder ID',
+          methodIdentityCenter: 'IAM Identity Center',
+          methodGoogle: 'Google',
+          methodGithub: 'GitHub',
+          region: 'Region',
+          regionHint: 'Region of the Kiro API. Defaults to us-east-1. Imported credentials that specify a region keep their own.',
+          startUrl: 'Start URL',
+          startUrlHint: 'Your organization\'s AWS access portal, e.g. https://my-org.awsapps.com/start',
+          ssoRegion: 'SSO region',
+          ssoRegionHint: 'Region of your IAM Identity Center instance. Defaults to the region above.',
+          importDesc: 'Paste a Kiro refresh token or the full content of kiro-auth-token.json. IdC credentials must include clientId and clientSecret.',
+          importPlaceholder: 'Paste a refresh token or JSON credentials...',
+          validating: 'Validating...',
+          validateAndCreate: 'Validate & Create',
+          importFailed: 'Failed to import Kiro credentials',
+          builderIdDesc: 'Start login opens the AWS authorization page. Check that the code shown there matches the one below and approve; the account is created automatically.',
+          identityCenterDesc: 'Sign in with your organization\'s IAM Identity Center. Start login opens your organization\'s authorization page. Check that the code shown there matches the one below and approve; the account is created automatically.',
+          socialDesc: 'Start login opens the Kiro sign-in page. After you sign in, the browser is redirected to an address starting with kiro://. Paste that full address below.',
+          startLogin: 'Start login',
+          userCode: 'User code',
+          openLink: 'Authorization page',
+          loginPage: 'Sign-in page',
+          callbackUrl: 'Callback URL',
+          callbackUrlHint: 'If the address bar does not change, open the Network panel of the browser developer tools, find the last redirect and copy its kiro:// address.',
+          completeLogin: 'Complete login',
+          waiting: 'Waiting for authorization...',
+          loginFailed: 'Kiro login failed'
+        }
                 },      // Gemini specific (platform-wide)
       gemini: {
         helpButton: 'Help',
@@ -1630,6 +1663,7 @@ export default {
       geminiAccount: 'Gemini Account',
       antigravityAccount: 'Antigravity Account',
       grokAccount: 'Grok Account',
+      kiroAccount: 'Kiro Account',
       inputMethod: 'Input Method',
       reAuthorizedSuccess: 'Account re-authorized successfully',
       // Test Modal
@@ -1711,6 +1745,8 @@ export default {
         noData: 'No usage data available for this account'
       },
       usageWindow: {
+        kiroMonthly: 'Mo',
+        kiroCredits: '{used} / {limit} credits used',
         statsTitle: '5-Hour Window Usage Statistics',
         statsTitleDaily: 'Daily Usage Statistics',
         geminiProDaily: 'Pro',
