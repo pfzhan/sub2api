@@ -1466,7 +1466,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		// 该值会被拼进出站 User-Agent 与 billing attribution，必须是合法版本号；空串表示跟随自动同步。
 		normalized := strings.TrimSpace(*req.ClaudeCodeClientVersion)
 		if normalized != "" && service.NormalizeClaudeCodeClientVersion(normalized) == "" {
-			response.Error(c, http.StatusBadRequest, "claude_code_client_version must be empty or a valid version (e.g. 2.1.258)")
+			response.Error(c, http.StatusBadRequest, "claude_code_client_version must be empty or a valid version (e.g. 2.1.318)")
 			return
 		}
 		req.ClaudeCodeClientVersion = &normalized

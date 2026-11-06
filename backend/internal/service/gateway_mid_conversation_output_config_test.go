@@ -25,8 +25,9 @@ import (
 //	{"role":"system","content":[],"output_config":{"effort":"high"}}
 //
 // 的空控制消息，并在 anthropic-beta 中请求
-// mid-conversation-output-config-2026-07-01。OAuth mimic 会用
-// FullClaudeCodeMimicryBetas 覆盖客户端 beta；若该 beta 不在固定列表内，
+// mid-conversation-output-config-2026-07-01。CLI 2.1.318 的主对话画像不含
+// 这个 beta，OAuth mimic 会用 FullClaudeCodeMimicryBetas 覆盖客户端 beta；
+// 该 beta 不在固定列表内时，
 // body 消息级 output_config 与最终 header 不再对称 → 上游 400：
 //
 //	"output_config: Extra inputs are not permitted"
@@ -195,10 +196,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_MidConversationOutputConfig_Idempote
 // ============================================================================
 
 // OAuth mimic 路径真实 request 联动，两 case 明确期望：
-//   - 默认：mimic 固定列表带该 beta → outgoing header 含 token，空控制 system 消息保留；
-//   - policy filter 命中（经 gin context 的 betaPolicyFilterSetKey 缓存注入该 token，
-//     走真实 policy filter/dropSet 路径）→ outgoing header 无 token，空控制 system
-//     消息整条删除。
+//   - 默认：CLI 2.1.318 画像不含该 beta → outgoing header 无 token，空控制 system
+//     消息整条删除；
+//   - policy filter 命中时结果相同，过滤器不能把画像之外的 beta 加回来。
 //
 // 两 case 都断言 user 文本、消息数、顶层 effort 原值；期望为显式常量，不引用
 // FullClaudeCodeMimicryBetas（避免把实现列表当 expected）。
@@ -210,7 +210,7 @@ func TestBuildUpstreamRequestOAuthMimic_MidConversationOutputConfig(t *testing.T
 		wantMsgLen        int
 		wantFieldOnFirst  bool
 	}{
-		{"default_mimic_keeps_beta", false, true, 2, true},
+		{"default_mimic_omits_beta", false, false, 1, false},
 		{"policy_filter_drops_beta", true, false, 1, false},
 	}
 	for _, tc := range cases {

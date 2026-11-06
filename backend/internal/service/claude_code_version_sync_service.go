@@ -20,7 +20,7 @@ const (
 	// claudeCodeVersionSyncPerPage 回退路径单次拉取的 release 数量（主路径见
 	// fetchLatestStableVersion）。
 	claudeCodeVersionSyncPerPage = 30
-	// claudeCodeVersionTagPrefix 客户端 release 的 tag 前缀（如 v2.1.280）。
+	// claudeCodeVersionTagPrefix 客户端 release 的 tag 前缀（如 v2.1.318）。
 	// 同仓库的 tag 家族单一，但显式按前缀过滤仍能挡住上游改版或混入的其他 tag。
 	claudeCodeVersionTagPrefix = "v"
 )

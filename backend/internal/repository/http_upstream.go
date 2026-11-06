@@ -1485,6 +1485,10 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 		case "https":
 			// The fingerprint dialer emits a plaintext CONNECT preface and cannot
 			// establish TLS to an HTTPS proxy. Keep proxy routing via net/http.
+			// 这条路径上 TLS 指纹没有生效，用 Warn 而不是 Debug，避免配置看起来开了却没人发现。
+			slog.Warn("tls_fingerprint_disabled_for_https_proxy",
+				"proxy", proxyURL.Host,
+				"reason", "fingerprint dialer cannot establish TLS to an HTTPS proxy")
 			return buildUpstreamTransport(settings, proxyURL, upstreamProtocolModeDefault)
 		case "http":
 			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（CONNECT 隧道）

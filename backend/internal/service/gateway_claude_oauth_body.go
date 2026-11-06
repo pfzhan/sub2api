@@ -351,13 +351,9 @@ func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account
 	seed := buildStableSessionSeed(account.ID, sessionContextDiscriminator(parsed.SessionContext), firstUserText)
 	sessionID := generateSessionUUID(seed)
 
-	// 根据指纹 UA 版本选择输出格式
-	var uaVersion string
-	if fp != nil {
-		uaVersion = ExtractCLIVersion(fp.UserAgent)
-	}
+	// 这条路径只在 Claude Code 伪装下调用，版本与出站 User-Agent、计费块一致。
 	accountUUID := strings.TrimSpace(account.GetExtraString("account_uuid"))
-	return FormatMetadataUserID(userID, accountUUID, sessionID, uaVersion)
+	return FormatMetadataUserID(userID, accountUUID, sessionID, ExtractCLIVersion(claude.DefaultUserAgent()))
 }
 
 // applyClaudeCodeOAuthMimicryToBody 将"非 Claude Code 客户端 + Claude OAuth 账号"
@@ -400,13 +396,13 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 	normalizeOpts := claudeOAuthNormalizeOptions{}
 
 	if s.identityService != nil && c != nil && c.Request != nil {
-		if fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header); err == nil && fp != nil {
+		if fp, err := s.oauthFingerprint(ctx, account, c.Request.Header); err == nil && fp != nil {
 			mimicMPT := false
 			if s.settingService != nil {
 				_, mimicMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
 			}
 			if !mimicMPT {
-				if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body); uid != "" {
+				if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body, sessionContextFromGin(c)); uid != "" {
 					normalizeOpts.injectMetadata = true
 					normalizeOpts.metadataUserID = uid
 				}
@@ -447,6 +443,7 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 	account *Account,
 	fp *Fingerprint,
 	body []byte,
+	sc *SessionContext,
 ) string {
 	_ = ctx
 	if account == nil {
@@ -464,21 +461,12 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 		userID = generateClientID()
 	}
 
-	// 与 buildOAuthMetadataUserID 一致：用会话级稳定种子，避免整 body 哈希导致
-	// 每轮（甚至每个 token 变化）都重算出不同的 session_id。
-	var clientDiscriminator string
-	if fp != nil {
-		clientDiscriminator = fp.ClientID
-	}
-	seed := buildStableSessionSeed(account.ID, clientDiscriminator, extractFirstUserText(body))
+	// 与 buildOAuthMetadataUserID 一致：用会话级稳定种子，并带上调用方区分因子，
+	// 避免两个 API Key 用同一句开场白合成同一个 session。
+	seed := buildStableSessionSeed(account.ID, sessionContextDiscriminator(sc), extractFirstUserText(body))
 	sessionID := generateSessionUUID(seed)
-
-	var uaVersion string
-	if fp != nil {
-		uaVersion = ExtractCLIVersion(fp.UserAgent)
-	}
 	accountUUID := strings.TrimSpace(account.GetExtraString("account_uuid"))
-	return FormatMetadataUserID(userID, accountUUID, sessionID, uaVersion)
+	return FormatMetadataUserID(userID, accountUUID, sessionID, ExtractCLIVersion(claude.DefaultUserAgent()))
 }
 
 // buildStableSessionSeed 为伪装路径合成的 metadata.user_id session_id 生成"会话级稳定"种子。

@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -14,7 +16,8 @@ const (
 	fingerprintKeyPrefix   = "fingerprint:"
 	fingerprintTTL         = 7 * 24 * time.Hour // 7天，配合每24小时懒续期可保持活跃账号永不过期
 	maskedSessionKeyPrefix = "masked_session:"
-	maskedSessionTTL       = 15 * time.Minute
+	// maskedSessionTTL 与 service.stickySessionTTL 对齐。活跃对话每次请求都会刷新。
+	maskedSessionTTL = time.Hour
 )
 
 // fingerprintKey generates the Redis key for account fingerprint cache.
@@ -23,8 +26,12 @@ func fingerprintKey(accountID int64) string {
 }
 
 // maskedSessionKey generates the Redis key for masked session ID cache.
-func maskedSessionKey(accountID int64) string {
-	return fmt.Sprintf("%s%d", maskedSessionKeyPrefix, accountID)
+func maskedSessionKey(accountID int64, conversationKey string) string {
+	conversationKey = strings.TrimSpace(conversationKey)
+	if conversationKey == "" {
+		conversationKey = "_"
+	}
+	return fmt.Sprintf("%s%d:%s", maskedSessionKeyPrefix, accountID, conversationKey)
 }
 
 type identityCache struct {
@@ -39,6 +46,9 @@ func (c *identityCache) GetFingerprint(ctx context.Context, accountID int64) (*s
 	key := fingerprintKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var fp service.Fingerprint
@@ -57,8 +67,8 @@ func (c *identityCache) SetFingerprint(ctx context.Context, accountID int64, fp 
 	return c.rdb.Set(ctx, key, val, fingerprintTTL).Err()
 }
 
-func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64) (string, error) {
-	key := maskedSessionKey(accountID)
+func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64, conversationKey string) (string, error) {
+	key := maskedSessionKey(accountID, conversationKey)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -69,7 +79,7 @@ func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64)
 	return val, nil
 }
 
-func (c *identityCache) SetMaskedSessionID(ctx context.Context, accountID int64, sessionID string) error {
-	key := maskedSessionKey(accountID)
+func (c *identityCache) SetMaskedSessionID(ctx context.Context, accountID int64, conversationKey, sessionID string) error {
+	key := maskedSessionKey(accountID, conversationKey)
 	return c.rdb.Set(ctx, key, sessionID, maskedSessionTTL).Err()
 }

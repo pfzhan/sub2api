@@ -18,17 +18,18 @@ import (
 func TestBuildUpstreamRequestToolChangeBetas(t *testing.T) {
 	const mid = "mid-conversation-tool-changes-2026-07-01"
 	const inline = "inline-tools-2026-09-15"
+	// CLI 2.1.318 puts both tokens in the default mimic portrait. A client
+	// header is not required. A drop set can still remove one. Unknown tokens
+	// stay out, and a repeated client token collapses to one.
 	for _, tc := range []struct {
 		name, header        string
 		drop                map[string]struct{}
 		wantMid, wantInline bool
 	}{
-		{"both", mid + "," + inline, nil, true, true},
-		{"mid only", mid, nil, true, false},
-		{"inline only", inline, nil, false, true},
-		{"absent", "", nil, false, false},
-		{"unknown", inline + "-other", nil, false, false},
-		{"duplicate", inline + ", " + inline + "," + mid, nil, true, true},
+		{"portrait includes both", "", nil, true, true},
+		{"client token is not required", mid, nil, true, true},
+		{"unknown client token stays out", inline + "-other", nil, true, true},
+		{"duplicate collapses", inline + ", " + inline + "," + mid, nil, true, true},
 		{"filter inline", mid + "," + inline, map[string]struct{}{inline: {}}, true, false},
 		{"filter mid", mid + "," + inline, map[string]struct{}{mid: {}}, false, true},
 	} {

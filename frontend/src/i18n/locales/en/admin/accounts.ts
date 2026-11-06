@@ -1117,11 +1117,11 @@ export default {
           label: 'TLS Fingerprint Simulation',
           hint: 'Simulate Node.js/Claude Code client TLS fingerprint',
           defaultProfile: 'Built-in Default',
-          randomProfile: 'Random'
+          randomProfile: 'Pinned per account'
         },
         sessionIdMasking: {
           label: 'Session ID Masking',
-          hint: 'When enabled, fixes the session ID in metadata.user_id for 15 minutes, making upstream think requests come from the same session'
+          hint: 'When enabled, keeps the session ID in metadata.user_id stable for each conversation for 1 hour and refreshes it on every request'
         },
         cacheTTLOverride: {
           label: 'Cache TTL Override',

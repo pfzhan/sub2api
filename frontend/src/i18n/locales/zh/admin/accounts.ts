@@ -1221,11 +1221,11 @@ export default {
           label: 'TLS 指纹模拟',
           hint: '模拟 Node.js/Claude Code 客户端的 TLS 指纹',
           defaultProfile: '内置默认',
-          randomProfile: '随机'
+          randomProfile: '按账号固定'
         },
         sessionIdMasking: {
           label: '会话 ID 伪装',
-          hint: '启用后将在 15 分钟内固定 metadata.user_id 中的 session ID，使上游认为请求来自同一会话'
+          hint: '启用后按每段对话固定 metadata.user_id 中的 session ID，有效期 1 小时，每次请求都会刷新'
         },
         cacheTTLOverride: {
           label: '缓存 TTL 强制替换',

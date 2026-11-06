@@ -5837,7 +5837,7 @@
                   v-model="form.claude_code_client_version"
                   type="text"
                   class="input w-full font-mono text-sm"
-                  placeholder="2.1.280"
+                  placeholder="2.1.318"
                 />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                   {{

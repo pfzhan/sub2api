@@ -25,8 +25,9 @@ func (s *IdentityCacheSuite) SetupTest() {
 }
 
 func (s *IdentityCacheSuite) TestGetFingerprint_Missing() {
-	_, err := s.cache.GetFingerprint(s.ctx, 1)
-	require.True(s.T(), errors.Is(err, redis.Nil), "expected redis.Nil for missing fingerprint")
+	fp, err := s.cache.GetFingerprint(s.ctx, 1)
+	require.NoError(s.T(), err, "missing fingerprint is an empty result, not an error")
+	require.Nil(s.T(), fp)
 }
 
 func (s *IdentityCacheSuite) TestSetAndGetFingerprint() {

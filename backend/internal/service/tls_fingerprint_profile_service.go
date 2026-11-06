@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"math/rand/v2"
+	"sort"
 	"sync"
 	"time"
 
@@ -145,8 +145,9 @@ func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *tlsfingerprint.
 	return nil
 }
 
-// getRandomProfile 从本地缓存中随机选择一个 Profile
-func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profile {
+// getStableProfile 按账号 ID 从本地缓存里固定选一个 Profile。
+// 模板 ID 排序后取 accountID % n，同一账号每次得到同一个 ClientHello。
+func (s *TLSFingerprintProfileService) getStableProfile(accountID int64) *tlsfingerprint.Profile {
 	s.localMu.RLock()
 	defer s.localMu.RUnlock()
 
@@ -154,18 +155,27 @@ func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profil
 		return nil
 	}
 
-	// 收集所有 profile
-	profiles := make([]*model.TLSFingerprintProfile, 0, len(s.localCache))
-	for _, p := range s.localCache {
+	ids := make([]int64, 0, len(s.localCache))
+	for id, p := range s.localCache {
 		if p != nil {
-			profiles = append(profiles, p)
+			ids = append(ids, id)
 		}
 	}
-	if len(profiles) == 0 {
+	if len(ids) == 0 {
 		return nil
 	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
-	return profiles[rand.IntN(len(profiles))].ToTLSProfile()
+	n := int64(len(ids))
+	idx := accountID % n
+	if idx < 0 {
+		idx += n
+	}
+	picked := s.localCache[ids[idx]]
+	if picked == nil {
+		return nil
+	}
+	return picked.ToTLSProfile()
 }
 
 // ResolveTLSProfile 根据 Account 的配置解析出运行时 TLS Profile
@@ -185,8 +195,8 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 		}
 	}
 	if id == -1 {
-		// 随机选择一个 profile
-		if p := s.getRandomProfile(); p != nil {
+		// 按账号固定选择一个 profile。配置值仍是 -1，不再每次随机。
+		if p := s.getStableProfile(account.ID); p != nil {
 			return p
 		}
 	}

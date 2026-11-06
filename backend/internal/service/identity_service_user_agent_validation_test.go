@@ -34,11 +34,11 @@ func (s *stubIdentityCache) SetFingerprint(_ context.Context, _ int64, fp *Finge
 	return nil
 }
 
-func (s *stubIdentityCache) GetMaskedSessionID(_ context.Context, _ int64) (string, error) {
+func (s *stubIdentityCache) GetMaskedSessionID(_ context.Context, _ int64, _ string) (string, error) {
 	return "", nil
 }
 
-func (s *stubIdentityCache) SetMaskedSessionID(_ context.Context, _ int64, _ string) error {
+func (s *stubIdentityCache) SetMaskedSessionID(_ context.Context, _ int64, _, _ string) error {
 	return nil
 }
 

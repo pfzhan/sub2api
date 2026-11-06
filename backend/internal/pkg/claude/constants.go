@@ -18,9 +18,11 @@ const (
 	BetaTokenCounting            = "token-counting-2024-11-01"
 	BetaContext1M                = "context-1m-2025-08-07"
 	BetaFastMode                 = "fast-mode-2026-02-01"
-	// Legacy structured output compatibility; forwarded only when explicitly requested.
-	BetaStructuredOutputs = "structured-outputs-2025-11-13"
-	// Tool-change compatibility tokens; never enabled without an explicit client request.
+	// Structured outputs are not part of the default mimic portrait. When a client
+	// sends a dated structured-outputs token, the mimic path forwards that token
+	// unchanged. CLI 2.1.318 (2026-11-05) sends the December token.
+	BetaStructuredOutputs = "structured-outputs-2025-12-15"
+	// These two are in the CLI 2.1.318 main-conversation portrait.
 	BetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
 	BetaInlineTools                = "inline-tools-2026-09-15"
 
@@ -32,6 +34,17 @@ const (
 	BetaThinkingBindingControls     = "thinking-binding-controls-2026-08-01"
 	BetaMidConversationOutputConfig = "mid-conversation-output-config-2026-07-01"
 	BetaExtendedCacheTTL            = "extended-cache-ttl-2025-04-11"
+	// CLI 2.1.318 main-conversation portrait, captured 2026-11-05.
+	BetaPerTurnControl               = "per-turn-control-2026-07-01"
+	BetaAdvisorTool                  = "advisor-tool-2026-03-01"
+	BetaThinkingTokenCount           = "thinking-token-count-2026-05-13"
+	BetaAdvancedToolUse              = "advanced-tool-use-2025-11-20"
+	BetaMidConversationSystemClearAt = "mid-conversation-system-clear-at-2026-08-21"
+	BetaDangerousToolUse             = "dangerous-tool-use-2026-09-03"
+	BetaThinkingDisplayUpdates       = "thinking-display-updates-2026-08-18"
+	BetaAFKMode                      = "afk-mode-2026-01-31"
+	BetaCacheDiagnosis               = "cache-diagnosis-2026-04-07"
+	BetaMessageThreads               = "message-threads-2026-08-12"
 
 	// server-side refusal fallback beta 字段族（beta Messages API 专有）。
 	// 客户端（Claude Code / SDK / OpenCode 等）会默认透传 body.fallbacks /
@@ -87,7 +100,8 @@ const DefaultCacheControlTTL = "5m"
 //
 // ⚠️ 读取实际生效的版本号请用 CLIVersion()，它会叠加 SUB2API_CLAUDE_CLI_VERSION 覆盖。
 // 直接引用本常量只在"表达内置基线"时才正确（例如覆盖值的下限校验）。
-const CLICurrentVersion = "2.1.258"
+// CLI 2.1.318, captured from the official macOS CLI on 2026-11-05.
+const CLICurrentVersion = "2.1.318"
 
 // FullClaudeCodeMimicryBetas 返回最"像"真实 Claude Code CLI 的完整 beta 列表，
 // 用于 OAuth 账号伪装成 Claude Code 时使用。
@@ -99,18 +113,47 @@ const CLICurrentVersion = "2.1.258"
 //   - API-key 账号：不要使用本函数，参见 APIKeyBetaHeader。
 //   - 不默认加入 redact-thinking，避免上游抹除 thinking 内容；客户端显式传入时由合并逻辑保留。
 func FullClaudeCodeMimicryBetas() []string {
+	// Order is the CLI 2.1.318 main-conversation header captured on 2026-11-05.
+	// Side-query, subagent, and fallback betas are intentionally absent.
+	// mid-conversation-output-config is not in that portrait.
 	return []string{
 		BetaClaudeCode,
 		BetaOAuth,
 		BetaInterleavedThinking,
-		BetaPromptCachingScope,
-		BetaEffort,
 		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaPerTurnControl,
+		BetaMidConversationToolChanges,
+		BetaInlineTools,
+		BetaAdvisorTool,
+		BetaThinkingTokenCount,
+		BetaAdvancedToolUse,
+		BetaMidConversationSystemClearAt,
+		BetaEffort,
+		BetaDangerousToolUse,
 		BetaThinkingBindingControls,
-		BetaMidConversationOutputConfig,
+		BetaThinkingDisplayUpdates,
+		BetaAFKMode,
 		BetaExtendedCacheTTL,
+		BetaCacheDiagnosis,
+		BetaMessageThreads,
 	}
 }
+
+// CountTokensMimicryBetas is the CLI 2.1.318 count_tokens header.
+// It is not the messages portrait plus a token-counting suffix.
+func CountTokensMimicryBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaOAuth,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaTokenCounting,
+	}
+}
+
+// MimicAcceptEncoding is the Accept-Encoding value sent by CLI 2.1.318.
+const MimicAcceptEncoding = "gzip, deflate, br, zstd"
 
 // DefaultHeaders 是 Claude Code 客户端默认请求头。
 // 每次调用现构造：User-Agent 走 DefaultUserAgent()（运行期可变版本号），
@@ -118,16 +161,16 @@ func FullClaudeCodeMimicryBetas() []string {
 // billing 两条路径间复用，避免版本缓存翻转瞬间头/体不一致。
 func DefaultHeaders() map[string]string {
 	return map[string]string{
-		// Keep these in sync with recent Claude CLI traffic to reduce the chance
-		// that Claude Code-scoped OAuth credentials are rejected as "non-CLI" usage.
-		// 版本参考：对齐 Parrot (src/transform/cc_mimicry.py:49) 的 CLI_USER_AGENT。
+		// CLI 2.1.318 stainless fields, captured 2026-11-05. The capture host was
+		// macOS; outbound OS stays Linux so the gateway is not identified as a Mac.
+		// One portrait for every mimic account; do not switch these per caller.
 		"User-Agent":                                DefaultUserAgent(),
 		"X-Stainless-Lang":                          "js",
-		"X-Stainless-Package-Version":               "0.94.0",
+		"X-Stainless-Package-Version":               "0.128.0",
 		"X-Stainless-OS":                            "Linux",
 		"X-Stainless-Arch":                          "arm64",
 		"X-Stainless-Runtime":                       "node",
-		"X-Stainless-Runtime-Version":               "v24.3.0",
+		"X-Stainless-Runtime-Version":               "v26.12.1",
 		"X-Stainless-Retry-Count":                   "0",
 		"X-Stainless-Timeout":                       "600",
 		"X-App":                                     "cli",

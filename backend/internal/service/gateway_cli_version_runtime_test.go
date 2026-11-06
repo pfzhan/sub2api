@@ -21,10 +21,9 @@ func withCLIVersionResolverForTest(t *testing.T, resolver func() string) {
 	t.Cleanup(func() { claude.SetCLIVersionResolver(nil) })
 }
 
-// 一致性铁律（d）：模拟一次 OAuth + mimic 的请求构建（messages 与 count_tokens 两条
-// 出站路径），断言出站 User-Agent 头里的版本号与请求体 x-anthropic-billing-header
-// 中 cc_version 的版本号相同，且都等于运行期注入的版本号。头/体不一致会被 Anthropic
-// 判为非正版客户端。
+// 一致性铁律（d）：messages 的 OAuth mimic 出站 User-Agent 与计费块 cc_version
+// 必须是同一次取到的版本号。count_tokens 的 CLI 2.1.318 画像不带计费块和
+// metadata，这条路径只核对 User-Agent，并确认计费块已被去掉。
 func TestBuildOAuthMimicRequest_RuntimeVersionConsistentBetweenHeaderAndBilling(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const upgraded = "9.9.9"
@@ -58,6 +57,12 @@ func TestBuildOAuthMimicRequest_RuntimeVersionConsistentBetweenHeaderAndBilling(
 			wantUA := "claude-cli/" + upgraded + " (external, cli)"
 			outboundUA := getHeaderRaw(req.Header, "User-Agent")
 			require.Equal(t, wantUA, outboundUA)
+			if endpoint == "count_tokens" {
+				require.NotContains(t, string(wireBody), "x-anthropic-billing-header")
+				require.False(t, gjson.GetBytes(wireBody, "metadata").Exists())
+				require.Empty(t, getHeaderRaw(req.Header, "X-Stainless-Timeout"))
+				return
+			}
 
 			billingText := gjson.GetBytes(wireBody, "system.0.text").String()
 			require.Contains(t, billingText, "x-anthropic-billing-header")

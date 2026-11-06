@@ -503,12 +503,16 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if s.settingService != nil {
 		ctEnableFP, ctEnableMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
+	// 一致性铁律：同一次请求内只取一次 mimic UA，billing cc_version、出站
+	// User-Agent 和伪装路径的 metadata 格式版本共用这一个字符串。
+	ctMimicUserAgent := claude.DefaultUserAgent()
 	var ctFingerprint *Fingerprint
 	if account.IsOAuth() && s.identityService != nil {
-		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
-		if err == nil {
+		fp, err := s.oauthFingerprint(ctx, account, clientHeaders)
+		if err == nil && fp != nil {
 			ctFingerprint = fp
-			if !ctEnableMPT {
+			// count_tokens 伪装不写 metadata。官方 CLI 的这次请求没有 metadata.user_id。
+			if !mimicClaudeCode && !ctEnableMPT {
 				accountUUID := account.GetExtraString("account_uuid")
 				if accountUUID != "" && fp.ClientID != "" {
 					if newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, fp.UserAgent); err == nil && len(newBody) > 0 {
@@ -524,10 +528,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if ctEnableFP {
 		billingFingerprint = ctFingerprint
 	}
-	// 一致性铁律：同一次请求内只取一次 mimic UA，billing cc_version 与出站
-	// User-Agent 头共用这一个字符串（同 buildUpstreamRequest）。
-	ctMimicUserAgent := claude.DefaultUserAgent()
-	if billingUA := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, billingFingerprint); billingUA != "" {
+	if mimicClaudeCode {
+		body = stripCountTokensMimicIdentity(body)
+	} else if billingUA := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, billingFingerprint); billingUA != "" {
 		body = syncBillingHeaderVersion(body, billingUA)
 	}
 
@@ -565,13 +568,15 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		setAnthropicAPIKeyAuthHeader(req.Header, account, token, baseURL)
 	}
 
-	// 白名单透传 headers（恢复真实 wire casing）
-	for key, values := range clientHeaders {
-		lowerKey := strings.ToLower(key)
-		if allowedHeaders[lowerKey] {
-			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+	// OAuth 伪装不透传客户端头。metadata 已经剥掉，留下的 session / request id 会对不上。
+	if tokenType != "oauth" || !mimicClaudeCode {
+		for key, values := range clientHeaders {
+			lowerKey := strings.ToLower(key)
+			if allowedHeaders[lowerKey] {
+				wireKey := resolveWireCasing(key)
+				for _, v := range values {
+					addHeaderRaw(req.Header, wireKey, v)
+				}
 			}
 		}
 	}
@@ -594,7 +599,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// OAuth + mimic Claude Code：强制注入 CLI 指纹 header
 	if tokenType == "oauth" && mimicClaudeCode {
-		applyClaudeCodeMimicHeaders(req, false, ctMimicUserAgent)
+		applyClaudeCodeMimicHeaders(req, ctMimicUserAgent)
+		// DefaultHeaders 会写上超时，count_tokens 不带这个头。
+		deleteHeaderAllForms(req.Header, "X-Stainless-Timeout")
 	}
 
 	// 写入最终 anthropic-beta header（Del 一次避免白名单透传值残留）
@@ -603,14 +610,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		setHeaderRaw(req.Header, "anthropic-beta", finalBetaHeader)
 	}
 
-	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖
-	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" {
-		if uid := gjson.GetBytes(body, "metadata.user_id").String(); uid != "" {
-			if parsed := ParseMetadataUserID(uid); parsed != nil {
-				setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", parsed.SessionID)
-			}
-		}
-	}
+	syncClaudeCodeSessionHeader(req, body, tokenType == "oauth" && mimicClaudeCode)
 
 	// 账号级请求头覆写（仅 anthropic/openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
@@ -624,6 +624,45 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 
 	return req, body, nil
+}
+
+// stripCountTokensMimicIdentity removes metadata and billing attribution.
+// CLI 2.1.318 count_tokens sends neither. Messages requests still carry both.
+func stripCountTokensMimicIdentity(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	if next, ok := deleteJSONPathBytes(body, "metadata"); ok {
+		body = next
+	}
+	system := gjson.GetBytes(body, "system")
+	if !system.Exists() {
+		return body
+	}
+	if system.Type == gjson.String {
+		if strings.HasPrefix(strings.TrimSpace(system.String()), "x-anthropic-billing-header") {
+			if next, ok := deleteJSONPathBytes(body, "system"); ok {
+				return next
+			}
+		}
+		return body
+	}
+	if !system.IsArray() {
+		return body
+	}
+	indexes := make([]int, 0, 1)
+	system.ForEach(func(key, item gjson.Result) bool {
+		if strings.HasPrefix(item.Get("text").String(), "x-anthropic-billing-header") {
+			indexes = append(indexes, int(key.Int()))
+		}
+		return true
+	})
+	for i := len(indexes) - 1; i >= 0; i-- {
+		if next, ok := deleteJSONPathBytes(body, fmt.Sprintf("system.%d", indexes[i])); ok {
+			body = next
+		}
+	}
+	return body
 }
 
 func sanitizeCountTokensRequestBody(body []byte) []byte {

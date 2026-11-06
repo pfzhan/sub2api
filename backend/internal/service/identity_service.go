@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
@@ -121,14 +122,15 @@ func floorClaudeCLIUserAgentVersion(ua string) (string, bool) {
 // UserAgent 不能在包 init 时固化：必须在每次使用时经 EffectiveCLIVersion 现取，
 // 否则运行期同步到新版本后，新建账号会写入过期版本作为持久身份。
 func defaultFingerprint() Fingerprint {
+	headers := claude.DefaultHeaders()
 	return Fingerprint{
-		UserAgent:               claude.DefaultUserAgent(),
-		StainlessLang:           "js",
-		StainlessPackageVersion: "0.94.0",
-		StainlessOS:             "Linux",
-		StainlessArch:           "arm64",
-		StainlessRuntime:        "node",
-		StainlessRuntimeVersion: "v24.3.0",
+		UserAgent:               headers["User-Agent"],
+		StainlessLang:           headers["X-Stainless-Lang"],
+		StainlessPackageVersion: headers["X-Stainless-Package-Version"],
+		StainlessOS:             headers["X-Stainless-OS"],
+		StainlessArch:           headers["X-Stainless-Arch"],
+		StainlessRuntime:        headers["X-Stainless-Runtime"],
+		StainlessRuntimeVersion: headers["X-Stainless-Runtime-Version"],
 	}
 }
 
@@ -149,18 +151,20 @@ type Fingerprint struct {
 type IdentityCache interface {
 	GetFingerprint(ctx context.Context, accountID int64) (*Fingerprint, error)
 	SetFingerprint(ctx context.Context, accountID int64, fp *Fingerprint) error
-	// GetMaskedSessionID 获取固定的会话ID（用于会话ID伪装功能）
-	// 返回的 sessionID 是一个 UUID 格式的字符串
-	// 如果不存在或已过期（15分钟无请求），返回空字符串
-	GetMaskedSessionID(ctx context.Context, accountID int64) (string, error)
-	// SetMaskedSessionID 设置固定的会话ID，TTL 为 15 分钟
-	// 每次调用都会刷新 TTL
-	SetMaskedSessionID(ctx context.Context, accountID int64, sessionID string) error
+	// GetMaskedSessionID 读取某段对话的伪装 session。
+	// conversationKey 是改写后、伪装前的 session，用来把不同对话分开。
+	// 不存在或超过 1 小时没有请求时返回空字符串。
+	GetMaskedSessionID(ctx context.Context, accountID int64, conversationKey string) (string, error)
+	// SetMaskedSessionID 写入伪装 session，TTL 为 1 小时，与粘性会话一致。
+	// 每次调用都刷新 TTL，对话持续进行时 session 不变。
+	SetMaskedSessionID(ctx context.Context, accountID int64, conversationKey, sessionID string) error
 }
 
 // IdentityService 管理OAuth账号的请求身份指纹
 type IdentityService struct {
 	cache IdentityCache
+	// devices 记住本进程见过的设备号。Redis 短暂不可用时用它，避免另造一个 ClientID。
+	devices sync.Map
 }
 
 // NewIdentityService 创建新的IdentityService
@@ -168,10 +172,18 @@ func NewIdentityService(cache IdentityCache) *IdentityService {
 	return &IdentityService{cache: cache}
 }
 
-// GetOrCreateFingerprint 获取或创建账号的指纹
-// 如果缓存存在，检测user-agent版本，新版本则更新
-// 如果缓存不存在，生成随机ClientID并从请求头创建指纹，然后缓存
+// GetOrCreateFingerprint 获取或创建账号的指纹。
+// 如果缓存存在，检测 user-agent 版本，新版本则更新。
+// 如果缓存不存在，生成随机 ClientID 并从请求头创建指纹，然后缓存。
 func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID int64, headers http.Header) (*Fingerprint, error) {
+	return s.GetOrCreateFingerprintPinned(ctx, accountID, headers, "")
+}
+
+// GetOrCreateFingerprintPinned 与 GetOrCreateFingerprint 相同。
+// 缓存缺失时优先沿用 pinnedClientID，不再另造设备号。
+// pinnedClientID 来自账号上持久化的值，必须是 64 位十六进制；其他形态忽略。
+func (s *IdentityService) GetOrCreateFingerprintPinned(ctx context.Context, accountID int64, headers http.Header, pinnedClientID string) (*Fingerprint, error) {
+	pinnedClientID = normalizePinnedClientID(pinnedClientID)
 	// 入口统一校验：创建与升级两条路径共用，任一路径漏掉都会让畸形 UA 被持久化。
 	clientUA := strings.TrimSpace(headers.Get("User-Agent"))
 	uaAcceptable := isAcceptableFingerprintUserAgent(clientUA)
@@ -228,6 +240,11 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 				"Floored cached fingerprint claude-cli version for account %d: %s", accountID, flooredUA)
 		}
 
+		if cached.ClientID == "" {
+			cached.ClientID = s.reuseOrMintDeviceID(accountID, pinnedClientID, false)
+			needWrite = true
+		}
+
 		if !needWrite && time.Since(time.Unix(cached.UpdatedAt, 0)) > 24*time.Hour {
 			// 距上次写入超过24小时，续期TTL
 			needWrite = true
@@ -236,11 +253,15 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 		if needWrite {
 			cached.UpdatedAt = time.Now().Unix()
 			if err := s.cache.SetFingerprint(ctx, accountID, cached); err != nil {
+				// 续期失败仍返回原来的设备号。调用方会把这个号写在账号上，键过期后还能找回来。
 				logger.LegacyPrintf("service.identity", "Warning: failed to refresh fingerprint for account %d: %v", accountID, err)
 			}
 		}
+		s.rememberDeviceID(accountID, cached.ClientID)
 		return cached, nil
 	}
+
+	cacheMissErr := err
 
 	// 缓存不存在或解析失败，创建新指纹。首次创建同样是持久化写入，
 	// 畸形 UA 在这里落库后就成了账号的长期身份，必须同样拒绝。
@@ -250,18 +271,70 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 			accountID, clientUA)
 	}
 	fp := s.createFingerprintFromHeaders(headers)
-
-	// 生成随机ClientID
-	fp.ClientID = generateClientID()
+	fp.ClientID = s.reuseOrMintDeviceID(accountID, pinnedClientID, cacheMissErr != nil)
 	fp.UpdatedAt = time.Now().Unix()
+	s.rememberDeviceID(accountID, fp.ClientID)
 
-	// 保存到缓存（7天TTL，每24小时自动续期）
+	// 保存到缓存（7天TTL，每24小时自动续期）。写入失败不换设备号。
 	if err := s.cache.SetFingerprint(ctx, accountID, fp); err != nil {
 		logger.LegacyPrintf("service.identity", "Warning: failed to cache fingerprint for account %d: %v", accountID, err)
 	}
 
 	logger.LegacyPrintf("service.identity", "Created new fingerprint for account %d with client_id: %s", accountID, fp.ClientID)
 	return fp, nil
+}
+
+// reuseOrMintDeviceID 按固定顺序决定设备号：调用方持久化的值、本进程记得的值、最后才新生成。
+// redisUnavailable 为真且只能新生成时打日志，方便区分「第一次见这个账号」和「缓存丢了」。
+func (s *IdentityService) reuseOrMintDeviceID(accountID int64, pinnedClientID string, redisUnavailable bool) string {
+	if pinnedClientID != "" {
+		return pinnedClientID
+	}
+	if remembered := s.rememberedDeviceID(accountID); remembered != "" {
+		return remembered
+	}
+	id := generateClientID()
+	if redisUnavailable {
+		logger.LegacyPrintf("service.identity", "Warning: fingerprint cache unavailable for account %d; minted client_id %s", accountID, id)
+	}
+	return id
+}
+
+func (s *IdentityService) rememberedDeviceID(accountID int64) string {
+	if s == nil || accountID == 0 {
+		return ""
+	}
+	v, ok := s.devices.Load(accountID)
+	if !ok {
+		return ""
+	}
+	id, _ := v.(string)
+	return id
+}
+
+func (s *IdentityService) rememberDeviceID(accountID int64, id string) {
+	if s == nil || accountID == 0 || id == "" {
+		return
+	}
+	s.devices.Store(accountID, id)
+}
+
+// normalizePinnedClientID 只接受本网关生成的 64 位十六进制设备号。
+func normalizePinnedClientID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) != 64 {
+		return ""
+	}
+	for _, r := range id {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return ""
+		}
+	}
+	return strings.ToLower(id)
 }
 
 // createFingerprintFromHeaders 从请求头创建指纹
@@ -451,21 +524,21 @@ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []b
 		return newBody, nil
 	}
 
-	// 获取或生成固定的伪装 session ID
-	maskedSessionID, err := s.cache.GetMaskedSessionID(ctx, account.ID)
+	// 伪装 session 按对话分开。键用改写后的 session，同一段对话 1 小时内保持不变。
+	conversationKey := uidParsed.SessionID
+	maskedSessionID, err := s.cache.GetMaskedSessionID(ctx, account.ID, conversationKey)
 	if err != nil {
 		logger.LegacyPrintf("service.identity", "Warning: failed to get masked session ID for account %d: %v", account.ID, err)
 		return newBody, nil
 	}
 
 	if maskedSessionID == "" {
-		// 首次或已过期，生成新的伪装 session ID
 		maskedSessionID = generateRandomUUID()
-		logger.LegacyPrintf("service.identity", "Generated new masked session ID for account %d: %s", account.ID, maskedSessionID)
+		logger.LegacyPrintf("service.identity", "Generated new masked session ID for account %d conversation %s: %s", account.ID, conversationKey, maskedSessionID)
 	}
 
-	// 刷新 TTL（每次请求都刷新，保持 15 分钟有效期）
-	if err := s.cache.SetMaskedSessionID(ctx, account.ID, maskedSessionID); err != nil {
+	// 每次请求都刷新 TTL，活跃对话不会在 1 小时边界被换掉。
+	if err := s.cache.SetMaskedSessionID(ctx, account.ID, conversationKey, maskedSessionID); err != nil {
 		logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for account %d: %v", account.ID, err)
 	}
 

@@ -1,7 +1,8 @@
 package service
 
 import (
-	"regexp"
+	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,14 +23,15 @@ func TestBuildOAuthMetadataUserID_FallbackWithoutAccountUUID(t *testing.T) {
 		Extra: map[string]any{}, // intentionally missing account_uuid / claude_user_id
 	}
 
-	fp := &Fingerprint{ClientID: "deadbeef"} // should be used as user id in legacy format
+	fp := &Fingerprint{ClientID: "deadbeef"}
 
 	got := svc.buildOAuthMetadataUserID(parsed, account, fp)
-	require.NotEmpty(t, got)
-
-	// Legacy format: user_{client}_account__session_{uuid}
-	re := regexp.MustCompile(`^user_[a-zA-Z0-9]+_account__session_[a-f0-9-]{36}$`)
-	require.True(t, re.MatchString(got), "unexpected user_id format: %s", got)
+	parsedID := ParseMetadataUserID(got)
+	require.NotNil(t, parsedID)
+	require.True(t, parsedID.IsNewFormat, "伪装路径的版本来自当前 CLI User-Agent，使用 JSON metadata")
+	require.Equal(t, "deadbeef", parsedID.DeviceID)
+	require.Empty(t, parsedID.AccountUUID)
+	require.NotEmpty(t, parsedID.SessionID)
 }
 
 func TestBuildOAuthMetadataUserID_UsesAccountUUIDWhenPresent(t *testing.T) {
@@ -52,11 +54,12 @@ func TestBuildOAuthMetadataUserID_UsesAccountUUIDWhenPresent(t *testing.T) {
 	}
 
 	got := svc.buildOAuthMetadataUserID(parsed, account, nil)
-	require.NotEmpty(t, got)
-
-	// New format: user_{client}_account_{account_uuid}_session_{uuid}
-	re := regexp.MustCompile(`^user_clientid123_account_acc-uuid_session_[a-f0-9-]{36}$`)
-	require.True(t, re.MatchString(got), "unexpected user_id format: %s", got)
+	parsedID := ParseMetadataUserID(got)
+	require.NotNil(t, parsedID)
+	require.True(t, parsedID.IsNewFormat)
+	require.Equal(t, "clientid123", parsedID.DeviceID)
+	require.Equal(t, "acc-uuid", parsedID.AccountUUID)
+	require.NotEmpty(t, parsedID.SessionID)
 }
 
 // TestBuildOAuthMetadataUserID_SessionIDStableAcrossTurns 验证伪装路径合成的
@@ -100,4 +103,39 @@ func TestBuildOAuthMetadataUserID_SessionIDStableAcrossTurns(t *testing.T) {
 		`{"role":"user","content":"a completely different opener"}]}`)
 	idOther := svc.buildOAuthMetadataUserID(other, account, fp)
 	require.NotEqual(t, id1, idOther, "不同首条消息应派生不同 session_id")
+}
+
+func TestBuildOAuthMetadataUserID_DifferentAPIKeysDifferentSession(t *testing.T) {
+	svc := &GatewayService{}
+	account := &Account{ID: 777, Type: AccountTypeOAuth, Extra: map[string]any{"account_uuid": "acc-uuid"}}
+	fp := &Fingerprint{ClientID: "clientid777"}
+	body := `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"same opener"}]}`
+	parse := func(keyID int64) *ParsedRequest {
+		parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(body)), PlatformAnthropic)
+		require.NoError(t, err)
+		parsed.SessionContext = &SessionContext{ClientIP: "203.0.113.8", UserAgent: "client/1", APIKeyID: keyID}
+		return parsed
+	}
+
+	a := svc.buildOAuthMetadataUserID(parse(1), account, fp)
+	b := svc.buildOAuthMetadataUserID(parse(2), account, fp)
+	require.NotEqual(t, a, b)
+}
+
+func TestSyncClaudeCodeSessionHeader(t *testing.T) {
+	sessionID := "11111111-1111-4111-8111-111111111111"
+	uid := FormatMetadataUserID("device", "acct", sessionID, "2.1.258")
+	body := []byte(`{"metadata":{"user_id":` + strconv.Quote(uid) + `}}`)
+
+	req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+	require.NoError(t, err)
+	syncClaudeCodeSessionHeader(req, body, false)
+	require.Empty(t, req.Header.Get("X-Claude-Code-Session-Id"))
+
+	syncClaudeCodeSessionHeader(req, body, true)
+	require.Equal(t, sessionID, req.Header.Get("X-Claude-Code-Session-Id"))
+
+	req.Header.Set("X-Claude-Code-Session-Id", "old")
+	syncClaudeCodeSessionHeader(req, body, false)
+	require.Equal(t, sessionID, req.Header.Get("X-Claude-Code-Session-Id"))
 }

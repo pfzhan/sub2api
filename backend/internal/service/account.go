@@ -2500,8 +2500,9 @@ func (a *Account) IsTLSFingerprintEnabled() bool {
 	return false
 }
 
-// GetTLSFingerprintProfileID 获取账号绑定的 TLS 指纹模板 ID
-// 返回 0 表示未绑定（使用内置默认 profile）
+// GetTLSFingerprintProfileID 获取账号绑定的 TLS 指纹模板 ID。
+// 返回 0 表示未绑定（使用内置默认 profile）。
+// 返回 -1 表示在已有模板中按账号 ID 固定选一个，同一账号每次相同。
 func (a *Account) GetTLSFingerprintProfileID() int64 {
 	if a.Extra == nil {
 		return 0

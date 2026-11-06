@@ -160,11 +160,16 @@ func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
 				}
 				require.Equal(t, wantUA, getHeaderRaw(req.Header, "User-Agent"))
 				version := ExtractCLIVersion(wantUA)
-				require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(),
-					"cc_version="+version+"."+computeClaudeCodeFingerprint(wireBody, version)+";")
-				if !tc.mimic {
-					// Independently calculated with Node.js for the cached 2.9.0 UA.
-					require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(), "cc_version=2.9.0.ac8;")
+				if endpoint == "count_tokens" && tc.mimic {
+					require.NotContains(t, string(wireBody), "x-anthropic-billing-header")
+					require.False(t, gjson.GetBytes(wireBody, "metadata").Exists())
+				} else {
+					require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(),
+						"cc_version="+version+"."+computeClaudeCodeFingerprint(wireBody, version)+";")
+					if !tc.mimic {
+						// Independently calculated with Node.js for the cached 2.9.0 UA.
+						require.Contains(t, gjson.GetBytes(wireBody, "system.0.text").String(), "cc_version=2.9.0.ac8;")
+					}
 				}
 				actualBody, err := io.ReadAll(req.Body)
 				require.NoError(t, err)
