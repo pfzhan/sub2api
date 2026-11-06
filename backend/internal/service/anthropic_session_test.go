@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -242,5 +243,66 @@ func TestBuildAnthropicDigestChain_ContentBlocks(t *testing.T) {
 	}
 	if !strings.HasPrefix(parts[0], "u:") {
 		t.Errorf("expected prefix 'u:', got: %s", parts[0])
+	}
+}
+
+func TestAnthropicDigestSessionSurvivesMovingCacheBreakpoint(t *testing.T) {
+	svc := &GatewayService{digestStore: NewDigestSessionStore()}
+	ctx := context.Background()
+	const groupID, prefix = int64(1), "prefix"
+
+	// 客户端每轮把缓存断点挪到最新一条消息上。
+	round1 := mustParseAnthropicDigestRequest(t, `{"system":"sys","messages":[
+		{"role":"user","content":[{"type":"text","text":"q1","cache_control":{"type":"ephemeral"}}]}]}`)
+	round2 := mustParseAnthropicDigestRequest(t, `{"system":"sys","messages":[
+		{"role":"user","content":[{"type":"text","text":"q1"}]},
+		{"role":"assistant","content":[{"type":"text","text":"a1"}]},
+		{"role":"user","content":[{"type":"text","text":"q2","cache_control":{"type":"ephemeral"}}]}]}`)
+	round3 := mustParseAnthropicDigestRequest(t, `{"system":"sys","messages":[
+		{"role":"user","content":[{"type":"text","text":"q1"}]},
+		{"role":"assistant","content":[{"type":"text","text":"a1"}]},
+		{"role":"user","content":[{"type":"text","text":"q2"}]},
+		{"role":"assistant","content":[{"type":"text","text":"a2"}]},
+		{"role":"user","content":[{"type":"text","text":"q3","cache_control":{"type":"ephemeral"}}]}]}`)
+
+	chain1 := BuildAnthropicDigestChain(round1)
+	_, _, _, found := svc.FindAnthropicSession(ctx, groupID, prefix, chain1)
+	if found {
+		t.Fatal("first round must not match")
+	}
+	if err := svc.SaveAnthropicSession(ctx, groupID, prefix, chain1, "uuid-1", 42, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	chain2 := BuildAnthropicDigestChain(round2)
+	uuid, accountID, matched, found := svc.FindAnthropicSession(ctx, groupID, prefix, chain2)
+	if !found || uuid != "uuid-1" || accountID != 42 || matched != chain1 {
+		t.Fatalf("round 2 should match round 1: found=%v uuid=%q account=%d matched=%q", found, uuid, accountID, matched)
+	}
+	if err := svc.SaveAnthropicSession(ctx, groupID, prefix, chain2, uuid, accountID, matched); err != nil {
+		t.Fatal(err)
+	}
+
+	uuid, _, matched, found = svc.FindAnthropicSession(ctx, groupID, prefix, BuildAnthropicDigestChain(round3))
+	if !found || uuid != "uuid-1" || matched != chain2 {
+		t.Fatalf("round 3 should match round 2: found=%v uuid=%q matched=%q", found, uuid, matched)
+	}
+}
+
+func TestHasMetadataSessionID(t *testing.T) {
+	withSession := mustParseAnthropicDigestRequest(t, `{"metadata":{"user_id":"user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000"},"messages":[{"role":"user","content":"hi"}]}`)
+	if !HasMetadataSessionID(withSession) {
+		t.Error("metadata session id should be detected")
+	}
+	without := mustParseAnthropicDigestRequest(t, `{"messages":[{"role":"user","content":"hi"}]}`)
+	if HasMetadataSessionID(without) || HasMetadataSessionID(nil) {
+		t.Error("requests without metadata session id must not be detected")
+	}
+}
+
+func TestDigestSessionTTLMatchesStickyBinding(t *testing.T) {
+	// 摘要会话比粘性绑定先过期时，停顿几分钟后的下一轮会换账号。
+	if got := NewDigestSessionStore().ttl; got != stickySessionTTL {
+		t.Fatalf("digest session TTL = %v, want sticky binding TTL %v", got, stickySessionTTL)
 	}
 }

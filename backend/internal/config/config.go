@@ -1568,6 +1568,14 @@ type GatewaySchedulingConfig struct {
 	// 默认 false，保持原有「优先级 → 负载率 → LRU」行为不变。
 	PreferSoonestReset bool `mapstructure:"prefer_soonest_reset"`
 
+	// PrefixAffinityEnabled 开启后，负载感知选择按请求的共享前缀（模型 + tools +
+	// system 中第一个缓存断点及之前的内容）给账号排序，让相同前缀的新会话集中到少数
+	// 账号上，提高上游 prompt 缓存的命中；排名最前的账号负载率达到
+	// PrefixAffinityMaxLoadRate 时顺延到下一个。默认 false。
+	PrefixAffinityEnabled bool `mapstructure:"prefix_affinity_enabled"`
+	// PrefixAffinityMaxLoadRate 是前缀亲和选号接受的账号负载率上限（百分比，1-100）。
+	PrefixAffinityMaxLoadRate int `mapstructure:"prefix_affinity_max_load_rate"`
+
 	// 负载计算
 	LoadBatchEnabled    bool `mapstructure:"load_batch_enabled"`
 	LoadBatchCacheTTLMS int  `mapstructure:"load_batch_cache_ttl_ms"`
@@ -2624,6 +2632,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
+	viper.SetDefault("gateway.scheduling.prefix_affinity_enabled", false)
+	viper.SetDefault("gateway.scheduling.prefix_affinity_max_load_rate", 80)
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.prefer_soonest_reset", false)
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
@@ -3794,6 +3804,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Scheduling.FallbackMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.fallback_max_waiting must be positive")
+	}
+	if c.Gateway.Scheduling.PrefixAffinityEnabled &&
+		(c.Gateway.Scheduling.PrefixAffinityMaxLoadRate < 1 || c.Gateway.Scheduling.PrefixAffinityMaxLoadRate > 100) {
+		return fmt.Errorf("gateway.scheduling.prefix_affinity_max_load_rate must be between 1-100")
 	}
 	if c.Gateway.Scheduling.LoadBatchCacheTTLMS < 0 {
 		return fmt.Errorf("gateway.scheduling.load_batch_cache_ttl_ms must be non-negative")

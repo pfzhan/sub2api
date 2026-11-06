@@ -6,8 +6,10 @@ import (
 	"time"
 )
 
-// digestSessionTTL 摘要会话默认 TTL
-const digestSessionTTL = 5 * time.Minute
+// digestSessionTTL 摘要会话默认 TTL，与粘性绑定一致。摘要会话用来找回不带
+// 会话 ID 的对话，比粘性绑定先过期时，用户停顿几分钟后对话就会换账号，
+// 丢掉上游 prompt 缓存。存储有条目数和字节数上限，按 LRU 淘汰。
+const digestSessionTTL = stickySessionTTL
 
 // sessionEntry flat cache 条目
 type sessionEntry struct {

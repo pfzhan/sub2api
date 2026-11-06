@@ -235,6 +235,12 @@ underscores_in_headers on;
 
 Nginx 默认会丢弃名称中含下划线的请求头（如 `session_id`），这会导致多账号环境下的粘性会话功能失效。
 
+### 前缀亲和（提升 prompt 缓存命中）
+
+上游 prompt 缓存按账号隔离，新会话在分组内各账号间平均分配时，同一段共享前缀（tools 和固定的 system 提示词）要在每个账号上各写一遍缓存。设置 `gateway.scheduling.prefix_affinity_enabled: true` 后，共享前缀（模型、tools 及 system 中第一个缓存断点及之前的内容）相同的新会话会优先落到同一账号，该账号负载率达到 `prefix_affinity_max_load_rate`（默认 80）时顺延到下一个账号。已有会话仍按粘性绑定。默认关闭。
+
+不带会话 ID（`metadata.user_id`）的客户端，网关按消息摘要链识别出同一段对话，让每一轮回到同一账号。摘要记录保存在每个网关实例的内存里，有效期 1 小时。部署多个网关副本时，请在负载均衡上把同一个 API Key 路由到同一副本，或让客户端带上会话 ID。
+
 ## Codex Fast/Flex 策略说明
 
 管理员后台的 `系统设置 -> 网关服务 -> OpenAI Fast/Flex 策略` 只负责处理请求体中的 `service_tier`，不会修改 Codex 客户端的模型目录，也不会让 Codex UI 自动出现 Speed 或 `/fast` 选项。

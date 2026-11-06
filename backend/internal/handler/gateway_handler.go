@@ -319,6 +319,20 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	// 没有 metadata 会话 ID 时 sessionHash 逐轮变化，改用摘要链识别出的稳定会话 key
+	// （见 gateway_anthropic_digest.go）。
+	var digestSession *anthropicDigestSession
+	if platform != service.PlatformGemini && sessionKey != "" && !service.HasMetadataSessionID(parsedReq) {
+		if digestSession = h.resolveAnthropicDigestSession(c, apiKey.GroupID, subject.UserID, apiKey.ID, platform, reqModel, parsedReq); digestSession != nil {
+			sessionKey = digestSession.sessionKey
+			reqLog.Info("sticky.anthropic_digest_session",
+				zap.String("session_key", sessionKey),
+				zap.Bool("matched", digestSession.matchedChain != ""),
+				zap.String("digest_chain", truncateDigestChain(digestSession.chain)),
+			)
+		}
+	}
+	c.Request = c.Request.WithContext(h.gatewayService.WithSharedPrefixAffinity(c.Request.Context(), parsedReq, reqModel))
 
 	// 查询粘性会话绑定的账号 ID
 	var sessionBoundAccountID int64
@@ -1133,6 +1147,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
+			}
+			if err := digestSession.save(c.Request.Context(), h.gatewayService, account.ID); err != nil {
+				reqLog.Warn("gateway.anthropic_digest_session_save_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
 
 			submitForwardUsage(result)

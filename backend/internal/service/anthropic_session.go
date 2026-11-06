@@ -49,7 +49,9 @@ func BuildAnthropicDigestChain(parsed *ParsedRequest) string {
 	return strings.Join(parts, "-")
 }
 
-// canonicalAnthropicDigestJSON 保持 digest 对 JSON key 顺序和空白不敏感。
+// canonicalAnthropicDigestJSON 保持 digest 对 JSON key 顺序和空白不敏感，并去掉
+// cache_control：客户端每轮把缓存断点挪到最新消息上，上一轮最后一条消息会因此
+// 变化，不去掉的话新一轮的摘要链就不再以上一轮的摘要链为前缀。
 func canonicalAnthropicDigestJSON(raw []byte) []byte {
 	if len(raw) == 0 {
 		return raw
@@ -58,11 +60,36 @@ func canonicalAnthropicDigestJSON(raw []byte) []byte {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return raw
 	}
+	stripAnthropicCacheControl(value)
 	canonical, err := json.Marshal(value)
 	if err != nil {
 		return raw
 	}
 	return canonical
+}
+
+func stripAnthropicCacheControl(value any) {
+	switch v := value.(type) {
+	case map[string]any:
+		delete(v, "cache_control")
+		for _, child := range v {
+			stripAnthropicCacheControl(child)
+		}
+	case []any:
+		for _, child := range v {
+			stripAnthropicCacheControl(child)
+		}
+	}
+}
+
+// HasMetadataSessionID 报告会话 hash 是否取自 metadata.user_id 中的会话 ID
+// （GenerateSessionHash 的第一级）。这类 ID 跨轮稳定，不需要摘要链兜底。
+func HasMetadataSessionID(parsed *ParsedRequest) bool {
+	if parsed == nil || parsed.MetadataUserID == "" {
+		return false
+	}
+	uid := ParseMetadataUserID(parsed.MetadataUserID)
+	return uid != nil && uid.SessionID != ""
 }
 
 // rolePrefix 将 Anthropic 的 role 映射为单字符前缀

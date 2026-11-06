@@ -233,6 +233,12 @@ underscores_in_headers on;
 
 Nginx drops headers containing underscores by default (e.g. `session_id`), which breaks sticky session routing in multi-account setups.
 
+### Prompt Cache Affinity
+
+Upstream prompt caches are per account, so spreading new sessions evenly across a group's accounts writes the same shared prefix (tools and the fixed system prompt) once per account. Set `gateway.scheduling.prefix_affinity_enabled: true` to send new sessions with the same shared prefix (model, tools and system up to the first cache breakpoint) to the same account; it moves on to the next account once that account's load rate reaches `prefix_affinity_max_load_rate` (default 80). Existing sessions stay on their sticky account. Off by default.
+
+Clients that send no session ID (`metadata.user_id`) are matched to their conversation by a chain of message digests, so each turn returns to the same account. These digests are kept in memory on each gateway instance for one hour. With several gateway replicas, route a given API key to the same replica at the load balancer, or have clients send a session ID.
+
 ---
 
 ## Deployment
